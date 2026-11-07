@@ -1,0 +1,1 @@
+{"clients":[{"ip":"192.168.255.1","ntp_hits":"64","ntp_drops":"0","last_ntp":"15","last_ntp_seconds":15},{"ip":"192.168.11.214","ntp_hits":"12","ntp_drops":"0","last_ntp":"3m","last_ntp_seconds":180},{"ip":"192.168.11.20","ntp_hits":"3","ntp_drops":"1","last_ntp":"2h","last_ntp_seconds":7200}]}

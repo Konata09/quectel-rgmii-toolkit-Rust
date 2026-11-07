@@ -1,0 +1,3 @@
+MS Name/IP address         Stratum Poll Reach LastRx Last sample
+===============================================================================
+#* PPS                           0   4   377    17  +1113ns[+1246ns] +/- 1000ns

@@ -1,0 +1,3 @@
+Name/IP Address            NP  NR  Span  Frequency  Freq Skew  Offset  Std Dev
+==============================================================================
+PPS                        16   9   240     -0.000      0.004     +0ns  1005ns

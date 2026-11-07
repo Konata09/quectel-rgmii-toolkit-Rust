@@ -10,6 +10,7 @@ mod console;
 mod events;
 mod forwarding;
 mod freq_lock;
+mod gnss;
 mod http;
 mod install_credentials;
 mod mock;
@@ -61,6 +62,11 @@ pub struct Config {
     pub ca_key: PathBuf,
     #[arg(long, default_value_t = false)]
     pub at_debug: bool,
+    /// chronyc for the GNSS timing page; the page stays hidden while it is missing.
+    #[arg(long, default_value = "/opt/bin/chronyc")]
+    pub chronyc: PathBuf,
+    #[arg(long, default_value = "/opt/etc/chrony/chrony.conf")]
+    pub chrony_conf: PathBuf,
 }
 impl Config {
     fn devices(&self) -> Vec<String> {

@@ -765,3 +765,59 @@ async fn at_queue_shows_running_waiting_and_finished_commands() {
         "GET"
     ));
 }
+#[tokio::test]
+async fn gnss_page_data_needs_a_session_and_get() {
+    let (app, _dir) = application();
+    let token = app.auth.create();
+    let get = |uri: &str, token: &str| {
+        app.router()
+            .oneshot(get_request(uri, token).body(Body::empty()).unwrap())
+    };
+    let body = |response: Response| async move {
+        let kind = response
+            .headers()
+            .get("content-type")
+            .map(|v| v.to_str().unwrap().to_owned())
+            .unwrap_or_default();
+        let bytes = to_bytes(response.into_body(), 1 << 20).await.unwrap();
+        (kind, String::from_utf8(bytes.to_vec()).unwrap())
+    };
+    assert_eq!(get("/api/gnss", "").await.unwrap().status(), 401);
+    assert_eq!(get("/api/gnss?part=live", "").await.unwrap().status(), 401);
+    assert_eq!(call(&app, "/api/gnss", "", &token).await.status(), 405);
+    let status = get("/api/gnss", &token).await.unwrap();
+    assert_eq!(status.status(), 200);
+    let (_, text) = body(status).await;
+    let status: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(status["installed"], true, "previews always have it");
+    // Nothing collected yet.
+    assert_eq!(
+        get("/api/gnss?part=live", &token).await.unwrap().status(),
+        503
+    );
+    assert_eq!(
+        get("/api/gnss?part=other", &token).await.unwrap().status(),
+        400
+    );
+
+    let mut context = crate::gnss::Context::default();
+    app.gnss.collect(&app.at, &mut context).await;
+    let live = get("/api/gnss?part=live", &token).await.unwrap();
+    assert_eq!(live.status(), 200);
+    assert_eq!(live.headers()["cache-control"], "no-store");
+    let (kind, text) = body(live).await;
+    assert_eq!(kind, "application/json");
+    let live: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(live["service_status"]["gpsd"], true);
+    assert_eq!(live["node"], "RG520N-EB");
+    let (kind, text) = body(get("/api/gnss?part=hist1", &token).await.unwrap()).await;
+    assert!(kind.starts_with("text/plain"));
+    assert!(text.starts_with("#track\n"), "{text}");
+    let (_, text) = body(get("/api/gnss?part=clients", &token).await.unwrap()).await;
+    assert!(text.contains("192.168.255.1"));
+    // The NMEA queries went through the shared AT queue.
+    let trace = app.at.trace.lock().unwrap().clone();
+    for command in crate::gnss::NMEA {
+        assert!(trace.iter().any(|c| c == command), "{command}: {trace:?}");
+    }
+}

@@ -58,6 +58,7 @@ pub struct App {
     pub watchdog: Arc<crate::watchdog::Watchdog>,
     pub freq_lock: Arc<crate::freq_lock::FreqLock>,
     pub scans: Arc<crate::scan::Scans>,
+    pub gnss: Arc<crate::gnss::Gnss>,
 }
 pub fn json_response(status: u16, value: Value) -> Response {
     (StatusCode::from_u16(status).unwrap(), axum::Json(value)).into_response()
@@ -193,6 +194,7 @@ impl App {
             config.mock,
             store.clone(),
         );
+        let gnss = crate::gnss::Gnss::new(&config);
         Ok(Arc::new(Self {
             config,
             at,
@@ -212,6 +214,7 @@ impl App {
             watchdog,
             freq_lock,
             scans: Default::default(),
+            gnss,
         }))
     }
     pub fn start(self: &Arc<Self>) {
@@ -229,6 +232,7 @@ impl App {
         self.ota.start();
         self.watchdog
             .start(self.at.clone(), self.monitor.clone(), self.events.clone());
+        self.gnss.start(self.at.clone());
         let app = self.clone();
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(Duration::from_secs(30));
@@ -370,7 +374,9 @@ async fn dispatch(State(app): State<Arc<App>>, request: Request) -> Response {
 fn method_allowed(path: &str, action: &str, method: &str) -> bool {
     let read = match path {
         // Snapshots that are only ever read.
-        "/api/telemetry" | "/api/webui_settings" | "/api/ota" => return method == "GET",
+        "/api/telemetry" | "/api/webui_settings" | "/api/ota" | "/api/gnss" => {
+            return method == "GET";
+        }
         "/api/forwarding"
         | "/api/module_model"
         | "/api/dashboard_data"
@@ -454,6 +460,7 @@ pub async fn api(
         "/api/telemetry/target" => telemetry_target(app, body).await,
         "/api/telemetry/schedule" => telemetry_schedule(app, body).await,
         "/api/ota" => Ok(app.ota.snapshot()),
+        "/api/gnss" => return gnss(app, &p),
         "/api/ota/settings" => app.ota.save(body).await,
         "/api/ota/check" => app.ota.check_now().await,
         "/api/ota/install" => app.ota.install(),
@@ -488,6 +495,21 @@ pub async fn api(
     match result {
         Ok(value) => json_response(200, value),
         Err(e) => error(400, e),
+    }
+}
+/// GNSS timing page: its status, or one of the files the ChroGPS Dash front end reads.
+fn gnss(app: &Arc<App>, p: &Params) -> Response {
+    let part = p.get("part");
+    if part.is_empty() {
+        return json_response(200, app.gnss.snapshot());
+    }
+    if app.gnss.snapshot()["installed"] != true {
+        return error(404, "GNSS timing is not installed");
+    }
+    match app.gnss.part(part) {
+        Some((kind, body)) => ([("content-type", kind)], body).into_response(),
+        None if part == "live" => error(503, "GNSS data is not ready yet"),
+        None => error(400, "unknown part"),
     }
 }
 fn text_result(result: Result<String>) -> Response {

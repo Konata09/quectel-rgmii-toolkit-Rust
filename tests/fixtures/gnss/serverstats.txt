@@ -1,0 +1,17 @@
+NTP packets received       : 190
+NTP packets dropped        : 0
+Command packets received   : 93
+Command packets dropped    : 0
+Client log records dropped : 0
+NTS-KE connections accepted: 0
+NTS-KE connections dropped : 0
+Authenticated NTP packets  : 0
+Interleaved NTP packets    : 0
+NTP timestamps held        : 0
+NTP timestamp span         : 0
+NTP daemon RX timestamps   : 0
+NTP daemon TX timestamps   : 190
+NTP kernel RX timestamps   : 190
+NTP kernel TX timestamps   : 0
+NTP hardware RX timestamps : 0
+NTP hardware TX timestamps : 0
