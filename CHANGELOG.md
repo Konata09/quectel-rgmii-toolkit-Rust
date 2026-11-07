@@ -2,6 +2,11 @@
 
 每个版本的完整说明和下载见 [GitHub Releases](https://github.com/tcpqueue/quectel-rgmii-toolkit-Rust/releases)。
 
+## 未发布 · GNSS 授时
+
+- **GNSS 授时**：模块装有 gnss-ppsd 与 chrony 时，“设备”下新增 GNSS 授时页，使用 ChroGPS Dash 前端显示同步状态、时间源、卫星天空图与信噪比、NTP 客户端和 24 小时历史。数据由本程序采集：每 10 秒经 AT 队列读 `AT+QGPSGNMEA` 并运行 `chronyc`，历史只在内存中（约 230 KB）。没有 chronyc 时菜单不显示、不采集。页面无标题，铺满内容区。参见 [GNSS 授时](docs/gnss.md)。
+- 测试可以在 macOS 上编译运行；补充 macOS 交叉编译说明。
+
 ## v0.4.10 · 审查修复
 
 - 断网恢复通知：开机后到第一次联网成功之前的探测失败不再算作断网，重启模块后不会再收到一条“网络已恢复”；断网时长改用不受系统时钟影响的计时，开机后才校准时钟时，断网时间和时长不再离谱。看门狗判断断网时长也不再受时钟跳变影响。

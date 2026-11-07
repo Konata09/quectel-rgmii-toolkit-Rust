@@ -15,6 +15,25 @@ rustup target add --toolchain 1.98.1 armv7-unknown-linux-musleabihf x86_64-pc-wi
 
 `.cargo/config.toml` 已配置交叉链接器。ARM 产物为 ARMv7、EABI5、musl 静态链接，运行时不依赖设备上的 Rust、Go 或动态 libc。
 
+### macOS
+
+测试和 ARM 程序也可以在 macOS（Apple 芯片）上构建；Windows 预览程序和设备助手不在此列。Rustup 按 `rust-toolchain.toml` 安装工具链，交叉编译器可用 [messense/homebrew-macos-cross-toolchains](https://github.com/messense/homebrew-macos-cross-toolchains/releases) 的 `armv7-unknown-linux-musleabihf-aarch64-darwin.tar.gz`，解压到任意目录，用环境变量覆盖 `.cargo/config.toml` 中的 Linux 编译器名：
+
+```sh
+TC=/path/to/armv7-unknown-linux-musleabihf/bin
+export CC_armv7_unknown_linux_musleabihf=$TC/armv7-unknown-linux-musleabihf-gcc
+export AR_armv7_unknown_linux_musleabihf=$TC/armv7-unknown-linux-musleabihf-ar
+export CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER=$TC/armv7-unknown-linux-musleabihf-gcc
+cargo test --locked
+cargo clippy --locked --all-targets --target armv7-unknown-linux-musleabihf -- -D warnings
+cargo build --locked --release --target armv7-unknown-linux-musleabihf
+install -m 755 target/armv7-unknown-linux-musleabihf/release/simpleadmin-httpd development/simpleadmin/simpleadmin-httpd.armv7
+sha256sum development/simpleadmin/simpleadmin-httpd.armv7 windows-test/bin/simpleadmin-httpd.exe > SHA256SUMS
+bash scripts/checksums.sh
+```
+
+macOS 自带的 `sha256sum` 输出格式与 GNU 相同。浏览器测试可用系统中的 Chrome：设置 `CHROMIUM_EXECUTABLE_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"`，安装 Playwright 时加 `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1`。`tests/installer.cjs` 依赖 Linux 环境，在 macOS 上会在 bridge0 MAC 一项失败。
+
 ## 编译
 
 ```sh
@@ -53,6 +72,7 @@ PLAYWRIGHT_MODULE="$PWD/work/browser/node_modules/playwright" node tests/pdp-bro
 PLAYWRIGHT_MODULE="$PWD/work/browser/node_modules/playwright" node tests/recovery-browser.cjs
 PLAYWRIGHT_MODULE="$PWD/work/browser/node_modules/playwright" node tests/views-browser.cjs
 PLAYWRIGHT_MODULE="$PWD/work/browser/node_modules/playwright" node tests/at-queue-browser.cjs
+PLAYWRIGHT_MODULE="$PWD/work/browser/node_modules/playwright" node tests/gnss-browser.cjs
 node tests/traffic-ui.cjs
 PLAYWRIGHT_MODULE="$PWD/work/browser/node_modules/playwright" node tests/traffic-direction-browser.cjs
 node tests/tls.cjs

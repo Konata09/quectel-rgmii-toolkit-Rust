@@ -1045,7 +1045,11 @@ fn chronyd_uptime(pid: &mut Option<u32>) -> i64 {
         .ok()
         .and_then(|u| u.split_whitespace().next()?.parse::<f64>().ok());
     // SAFETY: sysconf only reads a configuration value.
+    #[cfg(unix)]
     let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    // No /proc there anyway (the Windows preview).
+    #[cfg(not(unix))]
+    let ticks = 100;
     let ticks = if ticks > 0 { ticks as f64 } else { 100.0 };
     match (start, uptime) {
         (Some(start), Some(uptime)) => (uptime - start / ticks) as i64,

@@ -14,6 +14,7 @@
 | --- | --- | --- |
 | 设备 | 总览 | 网络状态、频段、小区、信号与天线读数，CPU、内存、流量；信号、温度、流量和延迟的五分钟趋势 |
 | | 网络事件 | 制式与小区切换、断网与恢复、锁定保护和看门狗的每一步，最近 200 条 |
+| | GNSS 授时 | 装有 gnss-ppsd 与 chrony 时显示：1PPS 同步状态、时间源、卫星天空图与信噪比、NTP 客户端、24 小时授时历史（ChroGPS Dash 前端） |
 | 网络 | 频段与频点 | 频段锁定；5G 频点锁定（严格校验、临时 / 持久）；两者都有 30 秒无信号自动恢复；运营商配置（MBN） |
 | | 小区锁定 | 邻区扫描与完整扫描（后台进行，结果保留 10 分钟）；临时 / 持久小区锁定及三分钟拨号失败回退 |
 | | 拨号与 SIM | APN 与网络模式；PDP 上下文；IMS/VoLTE、SIM 热插拔、数据漫游、SIM 卡槽 |
@@ -72,6 +73,7 @@
 | 断网自动恢复（看门狗） | [watchdog.md](docs/watchdog.md) |
 | 短信收发与兼容性 | [sms.md](docs/sms.md) · [sms-compatibility.md](docs/sms-compatibility.md) |
 | 五分钟趋势、延迟监测与网络事件 | [monitoring.md](docs/monitoring.md) |
+| GNSS 授时页面 | [gnss.md](docs/gnss.md) |
 | 流量统计 | [traffic.md](docs/traffic.md) |
 | 安全设计 | [security.md](docs/security.md) |
 | 资源与存储 | [resource-optimizations.md](docs/resource-optimizations.md) |
@@ -88,5 +90,6 @@
 
 - 功能和前端迁移自 [snjzb/quectel-rgmii-toolkit-Go](https://github.com/snjzb/quectel-rgmii-toolkit-Go)，保留原项目 MIT 许可与署名。
 - 总览布局早期参考 [Art Design Pro](https://github.com/Daymychen/art-design-pro)，图表和图标使用 ECharts、Lucide，许可见 `development/simpleadmin/www/licenses/`。
+- GNSS 授时页面使用 [ChroGPS Dash](https://chro.gpsda.sh/) 的前端（MIT，© 2026 Chip Cuccio），由 `vendor/chrogps-dash/` 构建，许可见 `development/simpleadmin/www/licenses/`。
 - 设备助手的开启 ADB 流程参考 ADBUnlockTool v1.33 的配置指令，用 Rust 独立实现，未分发原工具。
 - 设备助手使用的移远 Logo 归移远通信所有。本工具由 Monologue & 蓝天科技维护，不是移远官方产品。
