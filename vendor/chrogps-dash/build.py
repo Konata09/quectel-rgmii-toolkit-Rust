@@ -28,7 +28,9 @@ Built by vendor/chrogps-dash/build.py; edit shim.js there, not this file.
 -->
 """
 
-CSS = "<style>#admin-gear-btn{display:none!important}</style>"
+# The admin gear needs PHP. Cards lose their drop shadow: inside SimpleAdmin's flat layout
+# it stood out.
+CSS = "<style>#admin-gear-btn{display:none!important}.card,.card:hover{box-shadow:none!important}</style>"
 
 ATTRIBUTION = (
     "<br>Front end from <a href=\"https://chro.gpsda.sh/\" target=\"_blank\" rel=\"noopener\">ChroGPS Dash</a> "

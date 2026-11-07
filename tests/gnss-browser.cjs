@@ -67,6 +67,8 @@ async function freePort() {
     const lock = await frame.locator('#lock-badge-text').textContent();
     assert.notEqual(lock.trim(), 'NO SYNC', lock);
     await dash.waitForFunction(() => Number(document.getElementById('sat-cnt-total')?.textContent) > 0, null, {timeout: 20000});
+    // Flat cards, like the rest of SimpleAdmin.
+    assert.deepEqual(await dash.evaluate(() => [...new Set([...document.querySelectorAll('.card')].map(c => getComputedStyle(c).boxShadow))]), ['none']);
 
     // --- Graphs drawn in the browser from the backfilled preview history ---
     await dash.waitForFunction(() => document.querySelectorAll('#graph-tracking svg, #graph-pps svg').length > 0, null, {timeout: 20000});
