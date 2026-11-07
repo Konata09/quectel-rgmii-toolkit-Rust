@@ -39,6 +39,22 @@ async function freePort() {
     await page.waitForFunction(() => location.hash === '#gnss');
     assert.equal(await page.locator('#page-title-gnss').textContent(), 'GNSS 授时');
     assert.equal(await page.locator('#gnssFrame').getAttribute('src'), '/gnss/');
+    // The frame fills everything beside the sidebar: no title, footer or margins.
+    const fills = () => page.evaluate(() => {
+      const r = document.getElementById('gnssFrame').getBoundingClientRect();
+      const side = document.querySelector('.sa-sidebar').getBoundingClientRect();
+      const top = document.querySelector('.sa-topbar').getBoundingClientRect();
+      const tabs = document.querySelector('.sa-tabbar').getBoundingClientRect();
+      const phone = getComputedStyle(document.querySelector('.sa-sidebar')).display === 'none';
+      const want = phone
+        ? {left: 0, top: top.bottom, right: innerWidth, bottom: tabs.top}
+        : {left: side.right, top: 0, right: innerWidth, bottom: innerHeight};
+      const off = Object.keys(want).filter(k => Math.abs(r[k] - want[k]) > 1).map(k => `${k} ${r[k]} != ${want[k]}`);
+      return {off, scroll: document.scrollingElement.scrollHeight - innerHeight};
+    });
+    assert.deepEqual(await fills(), {off: [], scroll: 0});
+    assert.equal(await page.locator('#page-title-gnss').isVisible(), false);
+    assert.equal(await page.locator('.sa-site-footer').isVisible(), false);
     const frame = page.frameLocator('#gnssFrame');
     const inside = () => page.frames().find(f => f.url().endsWith('/gnss/'));
     await page.waitForFunction(() => document.getElementById('gnssFrame').contentDocument?.readyState === 'complete');
@@ -87,6 +103,11 @@ async function freePort() {
     await page.waitForFunction(() => location.hash === '#gnss');
     assert(await page.locator('#gnssPanel').isVisible());
     assert.equal(await page.locator('.sa-tabbar [data-tab="more"]').getAttribute('aria-current'), 'page');
+    assert.deepEqual(await fills(), {off: [], scroll: 0});
+    // Leaving the page brings the title and footer back elsewhere.
+    await page.goto(base + '/#deviceinfo');
+    assert.equal(await page.evaluate(() => document.documentElement.classList.contains('sa-gnss-full')), false);
+    assert(await page.locator('.sa-site-footer').isVisible());
 
     // --- English ---
     await page.setViewportSize({width: 1280, height: 900});

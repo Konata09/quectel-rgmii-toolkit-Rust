@@ -856,15 +856,19 @@ a.ui-row .ui-row-value + .ui-chevron { margin-left: 0; }
   .sa-console-panel { height: calc(100vh - 210px - var(--tabbar-height)); min-height: 300px; }
 }
 
-/* GNSS timing: the ChroGPS Dash page in a frame, scrolling inside it */
+/* GNSS timing: the ChroGPS Dash page fills everything beside the sidebar (between the top
+   bar and the tab bar on phones), with no title or margins; it scrolls inside the frame.
+   js/pages/gnss.js sets the class while the page is shown and measures the phone bars. */
 .sa-gnss-panel {
-  height: calc(100vh - 160px); min-height: 480px; border-radius: var(--radius); overflow: hidden;
-  background: var(--surface); box-shadow: var(--card-shadow);
+  position: fixed; top: 0; right: 0; bottom: 0; left: var(--sidebar-width);
+  background: var(--bg);
 }
 .sa-gnss-frame { display: block; width: 100%; height: 100%; border: 0; }
 .sa-gnss-missing p { margin: 0; padding: 16px; color: var(--secondary); }
+html.sa-gnss-full #page-gnss > .sa-page-titlebar,
+html.sa-gnss-full .sa-site-footer { display: none; }
 @media (max-width: 767px) {
-  .sa-gnss-panel { height: calc(100vh - 210px - var(--tabbar-height)); min-height: 360px; }
+  .sa-gnss-panel { top: var(--sa-gnss-top, 47px); bottom: var(--sa-gnss-bottom, 60px); left: 0; }
 }
 
 /* Online update */

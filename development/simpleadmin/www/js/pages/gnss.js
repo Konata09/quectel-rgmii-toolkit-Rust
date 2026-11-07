@@ -20,10 +20,23 @@
     if (missing) missing.hidden = installed !== false;
     if (panel) panel.hidden = installed !== true;
     const visible = root.Spa && typeof root.Spa.current === 'function' && root.Spa.current() === 'gnss';
+    // The frame fills the content area: no title, footer or margins.
+    document.documentElement.classList.toggle('sa-gnss-full', visible && installed === true);
+    measureBars();
     const element = frame();
     if (visible && installed === true && element && !element.getAttribute('src')) {
       element.setAttribute('src', '/gnss/');
     }
+  }
+
+  // On phones the frame sits between the sticky top bar and the fixed tab bar.
+  function measureBars() {
+    const html = document.documentElement;
+    if (!html.classList.contains('sa-gnss-full')) return;
+    const top = document.querySelector('.sa-topbar');
+    const bottom = document.querySelector('.sa-tabbar');
+    html.style.setProperty('--sa-gnss-top', `${top ? top.getBoundingClientRect().height : 0}px`);
+    html.style.setProperty('--sa-gnss-bottom', `${bottom ? bottom.getBoundingClientRect().height : 0}px`);
   }
 
   async function check() {
@@ -51,6 +64,7 @@
   }
 
   global.addEventListener('simpleadmin:page-changed', render);
+  global.addEventListener('resize', measureBars);
   global.addEventListener('simpleadmin:theme-changed', (event) => {
     followTheme(event.detail && event.detail.theme);
   });
