@@ -140,8 +140,24 @@ async fn native_session(app: Arc<App>, socket: &mut WebSocket, token: &str) -> R
         return Err(std::io::Error::last_os_error().into());
     }
     let mut name = [0 as libc::c_char; 128];
+    #[cfg(target_os = "linux")]
     if unsafe { libc::ptsname_r(fd, name.as_mut_ptr(), name.len()) } != 0 {
         return Err(std::io::Error::last_os_error().into());
+    }
+    // Other systems (macOS, for local tests) only have the non-reentrant ptsname.
+    #[cfg(not(target_os = "linux"))]
+    {
+        let found = unsafe { libc::ptsname(fd) };
+        if found.is_null() {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let found = unsafe { std::ffi::CStr::from_ptr(found) }.to_bytes_with_nul();
+        if found.len() > name.len() {
+            anyhow::bail!("pty name too long");
+        }
+        for (dst, src) in name.iter_mut().zip(found) {
+            *dst = *src as libc::c_char;
+        }
     }
     let slave_fd = unsafe {
         libc::open(
@@ -173,7 +189,7 @@ async fn native_session(app: Arc<App>, socket: &mut WebSocket, token: &str) -> R
         .kill_on_drop(true);
     unsafe {
         command.pre_exec(|| {
-            if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY, 0) < 0 {
+            if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
                 return Err(std::io::Error::last_os_error());
             }
             #[cfg(target_os = "linux")]
