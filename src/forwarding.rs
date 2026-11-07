@@ -27,14 +27,21 @@ const URC_FALLBACK_POLL: Duration = Duration::from_secs(60);
 const MAX_JOBS: usize = 64;
 const MAX_QUEUED_BYTES: usize = 256 * 1024;
 const MAX_SEEN: usize = 4096;
-const PLATFORMS: [&str; 6] = [
+/// New platforms go at the end: saved files list channels in this order.
+const PLATFORMS: [&str; 7] = [
     "serverchan",
     "wecom",
     "dingtalk",
     "feishu",
     "webhook",
     "sim",
+    "bark",
 ];
+/// Bark's public server, used when no server address is saved.
+const BARK_SERVER: &str = "https://api.day.app";
+/// Bark puts title and body into one APNs payload, which may not exceed 4 KB.
+const BARK_PART_BYTES: usize = 3000;
+const BARK_MAX_DEVICES: usize = 10;
 
 #[derive(Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
@@ -95,12 +102,18 @@ impl Default for Settings {
     }
 }
 impl Settings {
+    /// Files saved before a platform existed lack its entry; add it switched off.
     fn migrate(&mut self) {
-        if self.channels.len() == 5 && !self.channels.iter().any(|c| c.platform == "sim") {
-            self.channels.push(Channel {
-                platform: "sim".into(),
-                ..Channel::default()
-            });
+        if self.channels.len() >= PLATFORMS.len() {
+            return;
+        }
+        for platform in PLATFORMS {
+            if !self.channels.iter().any(|c| c.platform == platform) {
+                self.channels.push(Channel {
+                    platform: platform.into(),
+                    ..Channel::default()
+                });
+            }
         }
     }
     fn validate(&self) -> Result<()> {
@@ -111,7 +124,7 @@ impl Settings {
             bail!("invalid device name")
         }
         if self.channels.len() != PLATFORMS.len() {
-            bail!("six platform entries required")
+            bail!("one entry per platform required")
         }
         let mut seen = HashSet::new();
         for c in &self.channels {
@@ -143,6 +156,28 @@ impl Settings {
                     || !c.token.bytes().all(|b| b.is_ascii_alphanumeric())
                 {
                     bail!("invalid ServerChan Turbo SendKey")
+                }
+            } else if c.platform == "bark" {
+                let keys = bark_keys(&c.token);
+                if keys.is_empty()
+                    || keys.len() > BARK_MAX_DEVICES
+                    || keys.iter().any(|k| {
+                        k.len() > 64
+                            || !k
+                                .bytes()
+                                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+                    })
+                {
+                    bail!("invalid Bark device key")
+                }
+                let url = bark_push_url(&c.url)?;
+                // A server address copied with its key would push to the key's URL route,
+                // which overrides the message body.
+                if url
+                    .path_segments()
+                    .is_some_and(|mut s| s.any(|s| keys.contains(&s)))
+                {
+                    bail!("invalid Bark server URL")
                 }
             } else {
                 let url = reqwest::Url::parse(&c.url).context("invalid webhook URL")?;
@@ -443,6 +478,8 @@ struct Job {
     notification: Arc<Notification>,
     channel: usize,
     part: usize,
+    /// Bark devices that already have the current part.
+    devices_done: usize,
     attempts: u32,
     created: Instant,
     next: Instant,
@@ -463,7 +500,7 @@ struct State {
     detector: Detector,
     queue: VecDeque<Job>,
     records: VecDeque<Record>,
-    cooldown: [Option<Instant>; 6],
+    cooldown: [Option<Instant>; PLATFORMS.len()],
     poll_error: String,
     /// False when the saved file could not be loaded; the next save rewrites it even if the
     /// settings equal the defaults now in memory.
@@ -518,7 +555,7 @@ impl Forwarder {
                 detector: Detector::default(),
                 queue: VecDeque::new(),
                 records: VecDeque::new(),
-                cooldown: [None; 6],
+                cooldown: [None; PLATFORMS.len()],
                 stored: poll_error.is_empty(),
                 poll_error,
                 test_at: None,
@@ -535,7 +572,12 @@ impl Forwarder {
         self.snapshot_locked(&self.state.lock().unwrap())
     }
     fn snapshot_locked(&self, s: &State) -> Value {
-        let channels: Vec<_> = s.settings.channels.iter().map(|c|json!({"platform":c.platform,"enabled":c.enabled,"number":c.number,"has_url":!c.url.is_empty(),"has_token":!c.token.is_empty(),"has_secret":!c.secret.is_empty()})).collect();
+        let channels: Vec<_> = s.settings.channels.iter().map(|c|{
+            let mut v=json!({"platform":c.platform,"enabled":c.enabled,"number":c.number,"has_url":!c.url.is_empty(),"has_token":!c.token.is_empty(),"has_secret":!c.secret.is_empty()});
+            // A Bark server address carries no credential; the device keys stay hidden.
+            if c.platform=="bark" {v["server"]=json!(c.url);}
+            v
+        }).collect();
         let st = &s.settings;
         json!({"sms_enabled":st.sms_enabled,"delete_after_day":st.delete_after_day,"cleanup":self.cleanup.status(),"enabled":st.enabled,"device_name":st.device_name,"channels":channels,"sms_platforms":st.sms_platforms,"outage_enabled":st.outage_enabled,"outage_platforms":st.outage_platforms,"outage_min_seconds":st.outage_min_seconds,"utc_offset_minutes":st.utc_offset_minutes,"language":st.language,"queued":s.queue.len(),"ready":s.detector.initialized,"error":s.poll_error,"records":s.records,"retry_seconds":180})
     }
@@ -612,7 +654,7 @@ impl Forwarder {
             if !s.settings.delete_after_day {
                 self.cleanup.cancel();
             }
-            s.cooldown = [None; 6];
+            s.cooldown = [None; PLATFORMS.len()];
             s.poll_error.clear();
             s.stored = true;
         }
@@ -774,6 +816,7 @@ impl Forwarder {
                 notification: notification.clone(),
                 channel,
                 part: 0,
+                devices_done: 0,
                 attempts: 0,
                 created: now,
                 next: now,
@@ -849,10 +892,10 @@ impl Forwarder {
         if self.state.lock().unwrap().generation != generation {
             return;
         }
-        let parts = if channel.platform == "sim" {
-            vec![job.notification.text.as_str()]
-        } else {
-            chunks(&job.notification.text, 1200)
+        let parts = match channel.platform.as_str() {
+            "sim" => vec![job.notification.text.as_str()],
+            "bark" => chunks(&job.notification.text, BARK_PART_BYTES),
+            _ => chunks(&job.notification.text, 1200),
         };
         let count = parts.len();
         let result = if channel.platform == "sim" {
@@ -865,13 +908,14 @@ impl Forwarder {
             .await
             .map_err(|e| (e.to_string(), false))
         } else {
-            self.send(
+            self.deliver(
                 &channel,
                 &job.notification,
                 parts[job.part],
                 job.part,
                 count,
                 RETRY_WINDOW.saturating_sub(job.created.elapsed()),
+                &mut job.devices_done,
             )
             .await
         };
@@ -882,6 +926,7 @@ impl Forwarder {
         match result {
             Ok(()) => {
                 job.part += 1;
+                job.devices_done = 0;
                 job.attempts = 0;
                 if job.part == count {
                     self.completed(&mut s, &job.notification, true);
@@ -954,7 +999,15 @@ impl Forwarder {
             kind: Kind::Sms,
         };
         let result = self
-            .send(&channel, &note, &note.text, 0, 1, Duration::from_secs(15))
+            .deliver(
+                &channel,
+                &note,
+                &note.text,
+                0,
+                1,
+                Duration::from_secs(15),
+                &mut 0,
+            )
             .await;
         let mut s = self.state.lock().unwrap();
         match result {
@@ -995,6 +1048,46 @@ impl Forwarder {
         next.delete_after_day = delete_after_day;
         self.persist(next).await
     }
+    /// Sends one part on a network channel. Bark sends it to each device key in turn;
+    /// `devices_done` counts the devices that already have it, so a retry resumes with the
+    /// device that failed instead of notifying the others again.
+    #[allow(clippy::too_many_arguments)]
+    async fn deliver(
+        &self,
+        c: &Channel,
+        n: &Notification,
+        part: &str,
+        index: usize,
+        total: usize,
+        remaining: Duration,
+        devices_done: &mut usize,
+    ) -> std::result::Result<(), (String, bool)> {
+        if c.platform != "bark" {
+            return self.send(c, n, part, index, total, remaining, None).await;
+        }
+        let keys = bark_keys(&c.token);
+        let started = Instant::now();
+        while *devices_done < keys.len() {
+            let left = remaining.saturating_sub(started.elapsed());
+            if let Err((message, retry)) = self
+                .send(c, n, part, index, total, left, Some(keys[*devices_done]))
+                .await
+            {
+                return Err(if keys.len() > 1 {
+                    (
+                        format!("device {}/{}: {message}", *devices_done + 1, keys.len()),
+                        retry,
+                    )
+                } else {
+                    (message, retry)
+                });
+            }
+            *devices_done += 1;
+        }
+        Ok(())
+    }
+    /// One HTTP request; `device` is the Bark device key.
+    #[allow(clippy::too_many_arguments)]
     async fn send(
         &self,
         c: &Channel,
@@ -1003,6 +1096,7 @@ impl Forwarder {
         index: usize,
         total: usize,
         remaining: Duration,
+        device: Option<&str>,
     ) -> std::result::Result<(), (String, bool)> {
         let english = self.state.lock().unwrap().settings.language == "en";
         if self.client.get().is_none() {
@@ -1019,7 +1113,7 @@ impl Forwarder {
             let _ = self.client.set(client);
         }
         let client = self.client.get().unwrap();
-        let (url, body) = payload(
+        let (url, mut body) = payload(
             c,
             n,
             part,
@@ -1029,6 +1123,9 @@ impl Forwarder {
             english,
         )
         .map_err(|_| ("invalid channel configuration".into(), false))?;
+        if let Some(device) = device {
+            body["device_key"] = json!(device);
+        }
         let mut request = client
             .post(url)
             .timeout(remaining.min(Duration::from_secs(15)));
@@ -1075,11 +1172,13 @@ impl Forwarder {
             .map_err(|_| ("invalid provider response".into(), true))?;
         let code = match c.platform.as_str() {
             "serverchan" | "feishu" => value.get("code").or_else(|| value.get("StatusCode")),
+            "bark" => value.get("code"),
             _ => value.get("errcode"),
         }
         .and_then(Value::as_i64);
+        let success = if c.platform == "bark" { 200 } else { 0 };
         match code {
-            Some(0) => Ok(()),
+            Some(code) if code == success => Ok(()),
             Some(code) => Err((format!("provider error {code}"), true)),
             None => Err(("provider success code missing".into(), true)),
         }
@@ -1169,6 +1268,38 @@ fn chunks(text: &str, max: usize) -> Vec<&str> {
     parts.push(&text[start..]);
     parts
 }
+/// Bark device keys, separated by commas, semicolons or spaces; repeats are dropped.
+fn bark_keys(text: &str) -> Vec<&str> {
+    let mut keys = Vec::new();
+    for key in text.split(|c: char| matches!(c, ',' | '，' | ';') || c.is_whitespace()) {
+        if !key.is_empty() && !keys.contains(&key) {
+            keys.push(key);
+        }
+    }
+    keys
+}
+/// The `/push` address under a Bark server; an empty address means the public server.
+fn bark_push_url(server: &str) -> Result<reqwest::Url> {
+    let mut url = reqwest::Url::parse(if server.is_empty() {
+        BARK_SERVER
+    } else {
+        server
+    })
+    .context("invalid Bark server URL")?;
+    if !matches!(url.scheme(), "https" | "http")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        bail!("invalid Bark server URL")
+    }
+    let base = url.path().trim_end_matches('/');
+    let base = base.strip_suffix("/push").unwrap_or(base).to_string();
+    url.set_path(&format!("{base}/push"));
+    Ok(url)
+}
 fn sign(key: &str, message: &str) -> String {
     let mut mac = Hmac::<Sha256>::new_from_slice(key.as_bytes()).unwrap();
     mac.update(message.as_bytes());
@@ -1195,15 +1326,28 @@ fn payload(
         ),
         Kind::Outage { .. } => format!("[{}] {}\n{}", n.device, n.title(english), part),
     };
-    let mut url = reqwest::Url::parse(if c.platform == "serverchan" {
-        "https://sctapi.ftqq.com"
-    } else {
-        &c.url
-    })?;
+    let mut url = match c.platform.as_str() {
+        "serverchan" => reqwest::Url::parse("https://sctapi.ftqq.com")?,
+        "bark" => bark_push_url(&c.url)?,
+        _ => reqwest::Url::parse(&c.url)?,
+    };
     let body = match c.platform.as_str() {
         "serverchan" => {
             url.set_path(&format!("/{}.send", c.token));
             json!({"title":format!("{} {}",n.device,n.title(english)).chars().take(32).collect::<String>(),"desp":content})
+        }
+        // Title "device-sender", body the message text unchanged; `send` adds the device key.
+        "bark" => {
+            let heading = match n.kind {
+                Kind::Sms => format!("{}-{}", n.device, n.sender),
+                Kind::Outage { .. } => format!("{}-{}", n.device, n.title(english)),
+            };
+            let title = if total > 1 {
+                format!("{heading} ({}/{total})", index + 1)
+            } else {
+                heading
+            };
+            json!({"title":title,"body":part})
         }
         "wecom" => json!({"msgtype":"text","text":{"content":content}}),
         "dingtalk" => {

@@ -9,8 +9,11 @@ const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 (async()=>{
   assert(!process.env.DEVICE_URL, 'Forwarding mutation tests must only run against an isolated mock server');
   const root=path.resolve(__dirname,'..');const temp=fs.mkdtempSync(path.join(os.tmpdir(),'simpleadmin-forwarding-'));
-  const received=[];
-  const sink=http.createServer(async(req,res)=>{let body='';for await(const b of req)body+=b;received.push({headers:req.headers,body:JSON.parse(body)});res.writeHead(received.length===2?503:200,{'Content-Type':'application/json'});res.end('{}');});
+  const received=[];const barks=[];
+  const sink=http.createServer(async(req,res)=>{let body='';for await(const b of req)body+=b;
+    // Bark posts to /push and expects Bark's success code back.
+    if(req.url==='/push'){barks.push({headers:req.headers,body:JSON.parse(body)});res.writeHead(200,{'Content-Type':'application/json'});res.end('{"code":200,"message":"success"}');return;}
+    received.push({headers:req.headers,body:JSON.parse(body)});res.writeHead(received.length===2?503:200,{'Content-Type':'application/json'});res.end('{}');});
   await new Promise(r=>sink.listen(18087,'127.0.0.1',r));
   const child=spawn(path.join(root,'target/debug/simpleadmin-httpd'),['--mock','--http','127.0.0.1:18086','--static',path.join(root,'development/simpleadmin/www'),'--auth-file',path.join(temp,'auth'),'--ttl-file',path.join(temp,'ttl')],{stdio:['ignore','pipe','pipe']});
   let logs='';child.stdout.on('data',b=>logs+=b);child.stderr.on('data',b=>logs+=b);
@@ -34,7 +37,7 @@ const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
       for(const width of [1440,1024,390,320]) {
         await page.setViewportSize({width,height:1000});
         await page.waitForTimeout(350);
-        for(const platform of ['serverchan','wecom','dingtalk','feishu','webhook','sim']) {
+        for(const platform of ['serverchan','wecom','dingtalk','feishu','webhook','sim','bark']) {
           await page.locator('#forward-tab-'+platform).click();
           assert(!(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1)),`${language}/${width}/${platform}: overflow`);
           const panel=page.locator('#forward-panel-'+platform);assert(await panel.isVisible());
@@ -51,6 +54,20 @@ const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     assert.equal((await api('/api/forwarding')).data.channels[4].has_token,true);assert(!(JSON.stringify((await api('/api/forwarding')).data)).includes('local-test'));
     await page.locator('#forward-panel-webhook').getByRole('button',{name:'测试推送',exact:true}).click();await page.waitForFunction(()=>SimpleAdmin.Vue.apps['#forwardingApp'].message==='测试成功');
     assert.equal(received.length,1);assert.equal(received[0].body.sender,'SimpleAdmin');assert.equal(received[0].body.text,'SimpleAdmin notification test');assert.equal(received[0].headers.authorization,'Bearer local-test');
+    // Bark: the server address is shown once saved, the device keys are not; each key gets its own push.
+    await page.locator('#forward-tab-bark').click();
+    assert.equal(await page.locator('#forward-url-bark').getAttribute('placeholder'),'https://api.day.app');
+    assert(await page.locator('#forward-panel-bark').getByRole('button',{name:'测试推送',exact:true}).isDisabled());
+    await page.locator('#forward-url-bark').fill('http://127.0.0.1:18087');await page.locator('#forward-token-bark').fill('keyA, keyB');await page.locator('#forward-channel-bark').check();
+    await page.locator('.sa-forward-toolbar button[type="submit"]').click();await page.waitForFunction(()=>!SimpleAdmin.Vue.apps['#forwardingApp'].dirty && !SimpleAdmin.Vue.apps['#forwardingApp'].busy);
+    const saved=(await api('/api/forwarding')).data;const barkSaved=saved.channels.find(c=>c.platform==='bark');
+    assert.equal(barkSaved.server,'http://127.0.0.1:18087');assert.equal(barkSaved.has_token,true);assert(!JSON.stringify(saved).includes('keyA'));
+    assert.equal(await page.locator('#forward-url-bark').getAttribute('placeholder'),'http://127.0.0.1:18087');assert.equal(await page.locator('#forward-token-bark').inputValue(),'');
+    await page.waitForTimeout(5000); // one test notification per 5 seconds
+    await page.locator('#forward-panel-bark').getByRole('button',{name:'测试推送',exact:true}).click();await page.waitForFunction(()=>SimpleAdmin.Vue.apps['#forwardingApp'].message==='测试成功');
+    assert.deepEqual(barks.map(b=>b.body),['keyA','keyB'].map(device_key=>({title:'Mock SMS module-SimpleAdmin',body:'SimpleAdmin notification test',device_key})));
+    assert(barks.every(b=>b.headers['content-type'].startsWith('application/json')));
+    await page.locator('#forwardEnabled').check();await page.waitForFunction(()=>document.querySelector('#smsPlatforms [data-sms-platform="bark"]')?.checked===true);await page.locator('#forwardEnabled').uncheck();
     const raw=(text,index=1)=>`+CMGL: ${index},"REC READ","10086",,"26/09/06,12:00:00+32"\n${text}\nOK`;
     const mock=payload=>page.evaluate(async payload=>{const r=await SimpleAdmin.Api.postForm('/api/mock_at',{action:'set',kind:'sms',payload});return r.json();},payload);
     assert.equal((await mock(raw('Old message'))).ok,true);
@@ -61,7 +78,9 @@ const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     for(let i=0;i<90 && received.length<3;i++)await page.waitForTimeout(500);
     if(received.length!==3) console.log(JSON.stringify({logs,state:(await api('/api/forwarding')).data,sms:await page.evaluate(async()=>{const r=await SimpleAdmin.Api.postForm('/api/get_sms',{force:'1'});return r.text();})}));
     assert.equal(received.length,3,'first attempt and retry must arrive');assert.equal(received[1].body.text,'New SMS: 123456');assert.deepEqual(received[1].body,received[2].body);assert.equal(received[1].headers['idempotency-key'],received[2].headers['idempotency-key']);
-    await page.waitForTimeout(12000);assert.equal(received.length,3,'duplicate polling must not resend');
+    for(let i=0;i<20 && barks.length<4;i++)await page.waitForTimeout(500);
+    assert.deepEqual(barks.slice(2).map(b=>b.body),['keyA','keyB'].map(device_key=>({title:'Mock SMS module-10086',body:'New SMS: 123456',device_key})),'Bark gets the text unchanged on every device');
+    await page.waitForTimeout(12000);assert.equal(received.length,3,'duplicate polling must not resend');assert.equal(barks.length,4,'nor to Bark');
     const status=(await api('/api/forwarding')).data;assert.equal(status.retry_seconds,180);assert(status.records.some(r=>r.status==='sent'&&r.sender==='10086'));assert(status.records.some(r=>r.status==='retrying'));
     await page.locator('.sa-menu-link[data-page-link="system"]').click();await page.reload();await showForwarding();assert(await page.locator('#forwardEnabled').isChecked());
     await page.locator('#forwardEnabled').uncheck();await page.locator('.sa-forward-toolbar button[type="submit"]').click();await page.waitForFunction(()=>!SimpleAdmin.Vue.apps['#forwardingApp'].busy&&!SimpleAdmin.Vue.apps['#forwardingApp'].dirty);
@@ -104,6 +123,6 @@ const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     await page.locator('.sa-lock-status').filter({hasText:'NR5G-SA'}).getByRole('button',{name:'取消锁频',exact:true}).click();await page.waitForFunction(()=>SimpleAdmin.Vue.apps['#networkApp'].lockRadios[1]?.persistent===false);
     assert.equal(JSON.parse(fs.readFileSync(path.join(temp,'cell-lock.json'),'utf8')).rules[1],null);
     assert.deepEqual(errors,[]);
-    console.log(JSON.stringify({result:'passed',languages:2,viewports:4,platforms:6,cellLocks:'passed',baseline:'passed',retry:'passed',dedup:'passed',screenshots:temp}));
+    console.log(JSON.stringify({result:'passed',languages:2,viewports:4,platforms:7,cellLocks:'passed',baseline:'passed',retry:'passed',dedup:'passed',screenshots:temp}));
   } finally {if(browser)await browser.close();child.kill();await new Promise(r=>child.once('exit',r));await new Promise(r=>sink.close(r));}
 })().catch(error=>{console.error(error);process.exitCode=1;});

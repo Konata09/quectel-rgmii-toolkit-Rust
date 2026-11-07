@@ -56,9 +56,15 @@
     "webhook does not match selected platform": "Webhook does not match the channel",
     "webhook token missing": "Webhook token missing",
     "invalid device name": "Invalid device name",
-    "wait before testing again": "Wait before testing again"
+    "wait before testing again": "Wait before testing again",
+    "服务器地址": "Server",
+    "留空则使用框内显示的地址": "Leave blank to keep the address shown",
+    "设备 Key": "Device keys",
+    "多个设备用逗号分隔": "Separate several keys with commas",
+    "invalid Bark device key": "Invalid Bark device key",
+    "invalid Bark server URL": "Invalid Bark server address"
   };
-  const chinese = {sent:'已送达',retrying:'重试中',failed:'失败',test:'测试推送','SMS read failed':'短信读取失败','retry window expired':'已超过 3 分钟重试上限','queue capacity exceeded':'推送队列已满','network or TLS request failed':'网络连接或证书验证失败','enable at least one channel':'短信转发请至少选择一个已启用的渠道','choose an enabled channel for outage notices':'断网恢复通知请至少选择一个已启用的渠道','invalid outage threshold':'断网时长阈值需在 10–3600 秒之间','invalid ServerChan Turbo SendKey':'Server酱 Turbo SendKey 无效','invalid webhook URL':'Webhook URL 无效','webhook does not match selected platform':'Webhook 地址与平台不匹配','webhook token missing':'Webhook 地址缺少令牌','invalid device name':'设备名称无效','wait before testing again':'请稍后再次测试'};
+  const chinese = {sent:'已送达',retrying:'重试中',failed:'失败',test:'测试推送','SMS read failed':'短信读取失败','retry window expired':'已超过 3 分钟重试上限','queue capacity exceeded':'推送队列已满','network or TLS request failed':'网络连接或证书验证失败','enable at least one channel':'短信转发请至少选择一个已启用的渠道','choose an enabled channel for outage notices':'断网恢复通知请至少选择一个已启用的渠道','invalid outage threshold':'断网时长阈值需在 10–3600 秒之间','invalid ServerChan Turbo SendKey':'Server酱 Turbo SendKey 无效','invalid webhook URL':'Webhook URL 无效','webhook does not match selected platform':'Webhook 地址与平台不匹配','webhook token missing':'Webhook 地址缺少令牌','invalid device name':'设备名称无效','wait before testing again':'请稍后再次测试','invalid Bark device key':'Bark 设备 Key 无效','invalid Bark server URL':'Bark 服务器地址无效'};
   root.Pages.forwarding = function () {
     return {
       language: root.Lang.getCurrentLanguage(), enabled:false,sms_enabled:true,delete_after_day:false,device_name:'',channels:[],selected:'serverchan',
@@ -70,12 +76,12 @@
       },
       webhookExample: '{"event":"sms.received","id":"...","device":"RM520N-EU","sender":"10086","received_at":"...","text":"...","part":1,"parts":1}\n{"event":"network.restored","id":"...","device":"RM520N-EU","lost_at":"...","restored_at":"...","seconds":185,"text":"..."}',
       guide(key) { return root.ForwardingGuides.get(key,this.language); },
-      platform(key) {if(key==='sim') return this.t('本卡短信');return ({serverchan:'Server酱 Turbo',wecom:'企业微信',dingtalk:'钉钉',feishu:'飞书',webhook:'Webhook'})[key] && (this.language==='zh-CN' ? ({serverchan:'Server酱 Turbo',wecom:'企业微信',dingtalk:'钉钉',feishu:'飞书',webhook:'Webhook'})[key] : ({serverchan:'ServerChan Turbo',wecom:'WeCom',dingtalk:'DingTalk',feishu:'Feishu',webhook:'Webhook'})[key]) || key;},
+      platform(key) {if(key==='sim') return this.t('本卡短信');return (this.language==='zh-CN' ? {serverchan:'Server酱 Turbo',wecom:'企业微信',dingtalk:'钉钉',feishu:'飞书',webhook:'Webhook',bark:'Bark'} : {serverchan:'ServerChan Turbo',wecom:'WeCom',dingtalk:'DingTalk',feishu:'Feishu',webhook:'Webhook',bark:'Bark'})[key] || key;},
       eventName(key) {return this.t(({sms:'短信',outage:'断网恢复',test:'测试'})[key] || '短信');},
       time(value) {return new Intl.DateTimeFormat(this.language,{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'}).format(new Date(value));},
       changed() {for(const c of this.channels) {if(c.clear && (c.url || c.token || c.secret || c.number)) c.clear=false;}this.dirty=true;this.message='';},
       // A channel counts as set up once it is switched on and has its credentials.
-      ready_channel(c) {return c.enabled && (c.platform==='sim' ? !!(c.number||'').trim() : (c.has_url||c.has_token||!!(c.url||c.token||'').trim()));},
+      ready_channel(c) {if(!c.enabled) return false;if(c.platform==='sim') return !!(c.number||'').trim();if(c.platform==='bark') return c.has_token||!!(c.token||'').trim();return c.has_url||c.has_token||!!(c.url||c.token||'').trim();},
       usable() {return this.channels.filter(c=>this.ready_channel(c));},
       togglePlatform(list,platform) {const i=this[list].indexOf(platform);if(i===-1)this[list].push(platform);else this[list].splice(i,1);this.changed();},
       async request(path,data) {

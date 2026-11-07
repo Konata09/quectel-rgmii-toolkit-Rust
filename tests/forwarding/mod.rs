@@ -15,20 +15,43 @@ fn notification() -> Notification {
 }
 
 #[test]
-fn five_channel_settings_migrate_without_writes_or_losing_credentials() {
+fn older_channel_lists_migrate_without_writes_or_losing_credentials() {
     let (f, _dir) = forwarder();
-    let mut settings = Settings::default();
-    settings.channels.pop();
-    settings.channels[0].token = "SCT123456789".into();
-    std::fs::write(&f.path, serde_json::to_vec(&settings).unwrap()).unwrap();
-    let before = std::fs::read(&f.path).unwrap();
-    let loaded = Forwarder::new(f.path.clone(), Arc::new(Store::new(true)));
-    assert_eq!(loaded.snapshot()["channels"].as_array().unwrap().len(), 6);
-    assert_eq!(
-        loaded.state.lock().unwrap().settings.channels[0].token,
-        "SCT123456789"
-    );
-    assert_eq!(std::fs::read(&f.path).unwrap(), before);
+    // Five channels (before the SIM channel) and six (before Bark).
+    for kept in [5, 6] {
+        let mut settings = Settings::default();
+        settings.channels.truncate(kept);
+        settings.sms_platforms.truncate(kept);
+        settings.channels[0].token = "SCT123456789".into();
+        std::fs::write(&f.path, serde_json::to_vec(&settings).unwrap()).unwrap();
+        let before = std::fs::read(&f.path).unwrap();
+        let loaded = Forwarder::new(f.path.clone(), Arc::new(Store::new(true)));
+        let snapshot = loaded.snapshot();
+        let platforms: Vec<_> = snapshot["channels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["platform"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(platforms, PLATFORMS);
+        assert_eq!(snapshot["error"], "");
+        // A channel added this way is off and not used until chosen.
+        assert_eq!(snapshot["channels"][6]["enabled"], false);
+        assert!(
+            !loaded
+                .state
+                .lock()
+                .unwrap()
+                .settings
+                .sms_platforms
+                .contains(&"bark".to_string())
+        );
+        assert_eq!(
+            loaded.state.lock().unwrap().settings.channels[0].token,
+            "SCT123456789"
+        );
+        assert_eq!(std::fs::read(&f.path).unwrap(), before);
+    }
 }
 
 #[tokio::test]
@@ -113,6 +136,7 @@ async fn unconfirmed_sim_segment_is_not_retried_or_deleted() {
             notification: Arc::new(note),
             channel: 5,
             part: 0,
+            devices_done: 0,
             attempts: 0,
             created: Instant::now(),
             next: Instant::now(),
@@ -336,6 +360,7 @@ async fn expired_jobs_are_not_sent_and_disabling_clears_queue() {
             notification: Arc::new(notification()),
             channel: 4,
             part: 0,
+            devices_done: 0,
             attempts: 1,
             created: Instant::now() - Duration::from_secs(181),
             next: Instant::now(),
@@ -375,7 +400,7 @@ fn senders_pick_their_own_enabled_channels() {
     assert!(s.validate().is_err());
     // Files written before these fields existed keep forwarding SMS on every channel.
     let old: Settings = serde_json::from_str(r#"{"enabled":false}"#).unwrap();
-    assert_eq!(old.sms_platforms.len(), 6);
+    assert_eq!(old.sms_platforms.len(), PLATFORMS.len());
     assert!(!old.outage_enabled);
 }
 #[test]
@@ -490,6 +515,7 @@ async fn disabling_sms_clears_pending_work_and_preserves_channel_settings() {
             notification: Arc::new(notification()),
             channel: 0,
             part: 0,
+            devices_done: 0,
             attempts: 0,
             created: Instant::now(),
             next: Instant::now(),
@@ -559,7 +585,7 @@ async fn webhook_posts_json_and_requires_http_success() {
         ..Channel::default()
     };
     let n = notification();
-    f.send(&c, &n, &n.text, 0, 1, Duration::from_secs(5))
+    f.send(&c, &n, &n.text, 0, 1, Duration::from_secs(5), None)
         .await
         .unwrap();
     assert_eq!(received.lock().unwrap()[0]["device"], "Test module");
@@ -568,7 +594,7 @@ async fn webhook_posts_json_and_requires_http_success() {
         ..c
     };
     assert_eq!(
-        f.send(&bad, &n, &n.text, 0, 1, Duration::from_secs(5))
+        f.send(&bad, &n, &n.text, 0, 1, Duration::from_secs(5), None)
             .await
             .unwrap_err(),
         ("HTTP 404".into(), false)
@@ -590,4 +616,194 @@ async fn damaged_settings_file_is_rewritten_even_with_default_values() {
     let first = std::fs::metadata(&path).unwrap().modified().unwrap();
     loaded.save(Settings::default()).await.unwrap();
     assert_eq!(first, std::fs::metadata(&path).unwrap().modified().unwrap());
+}
+#[test]
+fn bark_titles_bodies_and_server_addresses() {
+    let n = notification();
+    let c = Channel {
+        platform: "bark".into(),
+        url: "https://bark.example.com/".into(),
+        token: "keyA,keyB".into(),
+        ..Channel::default()
+    };
+    let (url, p) = payload(&c, &n, &n.text, 0, 1, 0, false).unwrap();
+    assert_eq!(url.as_str(), "https://bark.example.com/push");
+    // Title "device-sender"; the body is the message text as received.
+    assert_eq!(p, json!({"title":"Test module-10086","body":"Test SMS"}));
+    let (_, p) = payload(&c, &n, "second half", 1, 2, 0, false).unwrap();
+    assert_eq!(
+        p,
+        json!({"title":"Test module-10086 (2/2)","body":"second half"})
+    );
+    let outage = Notification {
+        kind: Kind::Outage {
+            lost: 0,
+            restored: 1,
+        },
+        sender: String::new(),
+        ..notification()
+    };
+    assert_eq!(
+        payload(&c, &outage, "x", 0, 1, 0, false).unwrap().1["title"],
+        "Test module-网络已恢复"
+    );
+    assert_eq!(
+        payload(&c, &outage, "x", 0, 1, 0, true).unwrap().1["title"],
+        "Test module-Internet restored"
+    );
+    for (server, push) in [
+        ("", "https://api.day.app/push"),
+        ("https://bark.example.com", "https://bark.example.com/push"),
+        (
+            "https://bark.example.com/push",
+            "https://bark.example.com/push",
+        ),
+        (
+            "http://192.168.1.2:8080/bark/",
+            "http://192.168.1.2:8080/bark/push",
+        ),
+    ] {
+        assert_eq!(bark_push_url(server).unwrap().as_str(), push, "{server}");
+    }
+    assert_eq!(
+        bark_keys(" keyA, keyB，keyA;keyC  "),
+        ["keyA", "keyB", "keyC"]
+    );
+    // A long message stays within one APNs payload per part.
+    let long = "短信".repeat(2000);
+    let parts = chunks(&long, BARK_PART_BYTES);
+    assert!(parts.len() > 1 && parts.iter().all(|p| p.len() <= BARK_PART_BYTES));
+}
+#[test]
+fn bark_needs_device_keys_and_a_plain_server_address() {
+    let mut s = Settings::default();
+    let bark = s
+        .channels
+        .iter()
+        .position(|c| c.platform == "bark")
+        .unwrap();
+    s.channels[bark].enabled = true;
+    assert!(s.validate().is_err(), "a device key is required");
+    s.channels[bark].token = "aBcDeFgHiJkLmNoPqRsTuV,vUtSrQpOnMlKjIhGfEdCbA".into();
+    assert!(s.validate().is_ok(), "the public server is the default");
+    s.channels[bark].url = "https://bark.example.com/".into();
+    assert!(s.validate().is_ok());
+    for server in [
+        "https://bark.example.com/aBcDeFgHiJkLmNoPqRsTuV/",
+        "ftp://bark.example.com",
+        "https://user:pw@bark.example.com",
+        "https://bark.example.com/?key=1",
+        "bark.example.com",
+    ] {
+        s.channels[bark].url = server.into();
+        assert!(s.validate().is_err(), "{server}");
+    }
+    s.channels[bark].url = "https://bark.example.com".into();
+    let many = (0..11)
+        .map(|i| format!("key{i}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    for keys in ["https://api.day.app/abc", "abc/def", "a\"b", many.as_str()] {
+        s.channels[bark].token = keys.into();
+        assert!(s.validate().is_err(), "{keys}");
+    }
+}
+#[tokio::test]
+async fn bark_reaches_each_device_once_and_resumes_with_the_failed_one() {
+    use axum::{Json, Router, http::StatusCode, routing::post};
+    let received = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let capture = received.clone();
+    let app = Router::new().route(
+        "/bark/push",
+        post(
+            move |headers: axum::http::HeaderMap, Json(body): Json<Value>| async move {
+                assert!(
+                    headers["content-type"]
+                        .to_str()
+                        .unwrap()
+                        .starts_with("application/json")
+                );
+                let mut list = capture.lock().unwrap();
+                list.push(body.clone());
+                let key = body["device_key"].as_str().unwrap_or_default();
+                // The second device fails once, as when APNs is briefly unavailable; an
+                // unknown key is rejected the way Bark rejects it.
+                if key == "keyB" && list.iter().filter(|b| b["device_key"] == "keyB").count() == 1 {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"code":500,"message":"push failed"})),
+                    )
+                } else if key == "unknown" {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({"code":400,"message":"failed to get device token"})),
+                    )
+                } else if key == "nocode" {
+                    (StatusCode::OK, Json(json!({})))
+                } else {
+                    (
+                        StatusCode::OK,
+                        Json(json!({"code":200,"message":"success"})),
+                    )
+                }
+            },
+        ),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let (f, _dir) = forwarder();
+    let c = Channel {
+        platform: "bark".into(),
+        url: format!("http://{address}/bark/"),
+        token: "keyA, keyB".into(),
+        ..Channel::default()
+    };
+    let n = notification();
+    let mut done = 0;
+    let wait = Duration::from_secs(5);
+    assert_eq!(
+        f.deliver(&c, &n, &n.text, 0, 1, wait, &mut done)
+            .await
+            .unwrap_err(),
+        ("device 2/2: HTTP 500".into(), true)
+    );
+    assert_eq!(done, 1);
+    f.deliver(&c, &n, &n.text, 0, 1, wait, &mut done)
+        .await
+        .unwrap();
+    assert_eq!(done, 2);
+    let keys: Vec<_> = received
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|b| b["device_key"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(keys, ["keyA", "keyB", "keyB"], "keyA is not notified twice");
+    assert_eq!(
+        received.lock().unwrap()[0],
+        json!({"title":"Test module-10086","body":"Test SMS","device_key":"keyA"})
+    );
+    let unknown = Channel {
+        token: "unknown".into(),
+        ..c.clone()
+    };
+    assert_eq!(
+        f.deliver(&unknown, &n, &n.text, 0, 1, wait, &mut 0)
+            .await
+            .unwrap_err(),
+        ("HTTP 400".into(), false)
+    );
+    let nocode = Channel {
+        token: "nocode".into(),
+        ..c.clone()
+    };
+    assert_eq!(
+        f.deliver(&nocode, &n, &n.text, 0, 1, wait, &mut 0)
+            .await
+            .unwrap_err()
+            .0,
+        "provider success code missing"
+    );
+    server.abort();
 }

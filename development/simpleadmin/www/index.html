@@ -856,11 +856,13 @@
 <div class="sa-forward-editor-heading"><h2>{{ platform(c.platform) }}</h2><label class="form-check form-switch"><input :id="'forward-channel-'+c.platform" class="form-check-input" type="checkbox" v-model="c.enabled" @change="changed" :disabled="busy"/><span>{{ t('启用') }}</span></label></div>
 <div class="sa-forward-fields">
 <div v-if="c.platform==='sim'"><label class="form-label" for="forward-number-sim">{{ t('收件人号码') }}</label><input id="forward-number-sim" class="form-control" type="tel" autocomplete="off" v-model="c.number" @input="changed" placeholder="+8613800138000" maxlength="21" :disabled="busy"/><p class="form-text">{{ t('使用本卡发送，运营商可能按短信分段收费') }}</p></div>
-<div v-if="c.platform!=='serverchan' && c.platform!=='sim'"><label class="form-label" :for="'forward-url-'+c.platform">Webhook URL</label><input :id="'forward-url-'+c.platform" class="form-control" type="password" autocomplete="new-password" v-model="c.url" @input="changed" :placeholder="c.has_url ? t('已保存') : 'https://'" maxlength="2048" :disabled="busy"/></div>
+<div v-if="c.platform==='bark'"><label class="form-label" for="forward-url-bark">{{ t('服务器地址') }}</label><input id="forward-url-bark" class="form-control" type="url" inputmode="url" autocomplete="off" spellcheck="false" v-model="c.url" @input="changed" :placeholder="c.server || 'https://api.day.app'" maxlength="2048" :disabled="busy"/><p class="form-text">{{ t('留空则使用框内显示的地址') }}</p></div>
+<div v-if="c.platform==='bark'"><label class="form-label" for="forward-token-bark">{{ t('设备 Key') }}</label><input id="forward-token-bark" class="form-control" type="password" autocomplete="new-password" spellcheck="false" v-model="c.token" @input="changed" :placeholder="c.has_token ? t('已保存') : t('多个设备用逗号分隔')" maxlength="512" :disabled="busy"/></div>
+<div v-if="c.platform!=='serverchan' && c.platform!=='sim' && c.platform!=='bark'"><label class="form-label" :for="'forward-url-'+c.platform">Webhook URL</label><input :id="'forward-url-'+c.platform" class="form-control" type="password" autocomplete="new-password" v-model="c.url" @input="changed" :placeholder="c.has_url ? t('已保存') : 'https://'" maxlength="2048" :disabled="busy"/></div>
 <div v-if="c.platform==='serverchan' || c.platform==='webhook'"><label class="form-label" :for="'forward-token-'+c.platform">{{ c.platform==='serverchan' ? 'SendKey (SCT)' : 'Authorization' }}</label><input :id="'forward-token-'+c.platform" class="form-control" type="password" autocomplete="new-password" v-model="c.token" @input="changed" :placeholder="c.has_token ? t('已保存') : (c.platform==='serverchan' ? 'SCT...' : t('可选'))" maxlength="512" :disabled="busy"/></div>
 <div v-if="c.platform==='dingtalk' || c.platform==='feishu'"><label class="form-label" :for="'forward-secret-'+c.platform">{{ t('签名密钥') }}</label><input :id="'forward-secret-'+c.platform" class="form-control" type="password" autocomplete="new-password" v-model="c.secret" @input="changed" :placeholder="c.has_secret ? t('已保存') : t('可选')" maxlength="256" :disabled="busy"/></div>
 </div>
-<div class="sa-forward-editor-actions"><button v-if="c.platform!=='sim'" class="btn btn-outline-primary" type="button" @click="test(c.platform)" :disabled="busy || dirty || testing!=='' || !(c.has_url || c.has_token)">{{ t(testing===c.platform ? '推送中…' : '测试推送') }}</button><button class="btn btn-outline-secondary" type="button" @click="clear(c)" :disabled="busy">{{ t('清除凭据') }}</button><span v-if="c.clear" class="text-danger">{{ t('待清除') }}</span></div>
+<div class="sa-forward-editor-actions"><button v-if="c.platform!=='sim'" class="btn btn-outline-primary" type="button" @click="test(c.platform)" :disabled="busy || dirty || testing!=='' || !(c.platform==='bark' ? c.has_token : (c.has_url || c.has_token))">{{ t(testing===c.platform ? '推送中…' : '测试推送') }}</button><button class="btn btn-outline-secondary" type="button" @click="clear(c)" :disabled="busy">{{ t('清除凭据') }}</button><span v-if="c.clear" class="text-danger">{{ t('待清除') }}</span></div>
 <aside class="sa-forward-guide"><h3>{{ t('对接说明') }}</h3><ol><li v-for="(step,index) in guide(c.platform).steps" :key="index">{{ step }}</li></ol><p>{{ guide(c.platform).note }}</p><a v-if="guide(c.platform).url" :href="guide(c.platform).url" target="_blank" rel="noopener noreferrer">{{ t('平台网站') }}</a><pre v-if="c.platform==='webhook'" dir="ltr">{{ webhookExample }}</pre></aside>
 </section>
 </div>
@@ -1013,8 +1015,8 @@
 <script src="js/pages/events.js?v=1.1"></script>
 <script src="js/pages/atqueue.js?v=1.0"></script>
 <script src="js/pages/sms.js?v=2.95"></script>
-<script src="js/pages/forwarding-guides.js?v=0.2.9"></script>
-<script src="js/pages/forwarding.js?v=0.3.0"></script>
+<script src="js/pages/forwarding-guides.js?v=0.3.0"></script>
+<script src="js/pages/forwarding.js?v=0.3.1"></script>
 <script src="js/pages/deviceinfo.js?v=2.94"></script>
 <script src="js/pages/gnss.js?v=1.1"></script>
 <script src="js/simpleadmin-spa.js?v=3.2"></script>
