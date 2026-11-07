@@ -856,6 +856,17 @@ a.ui-row .ui-row-value + .ui-chevron { margin-left: 0; }
   .sa-console-panel { height: calc(100vh - 210px - var(--tabbar-height)); min-height: 300px; }
 }
 
+/* GNSS timing: the ChroGPS Dash page in a frame, scrolling inside it */
+.sa-gnss-panel {
+  height: calc(100vh - 160px); min-height: 480px; border-radius: var(--radius); overflow: hidden;
+  background: var(--surface); box-shadow: var(--card-shadow);
+}
+.sa-gnss-frame { display: block; width: 100%; height: 100%; border: 0; }
+.sa-gnss-missing p { margin: 0; padding: 16px; color: var(--secondary); }
+@media (max-width: 767px) {
+  .sa-gnss-panel { height: calc(100vh - 210px - var(--tabbar-height)); min-height: 360px; }
+}
+
 /* Online update */
 .sa-ota-progress { flex: 1; min-width: 120px; height: 6px; accent-color: var(--tint); }
 .sa-ota-settings { margin-top: 12px; }

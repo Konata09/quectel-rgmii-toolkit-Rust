@@ -11,6 +11,8 @@
     const translations = {
   "en": {
 "网络事件": "Network events",
+"GNSS 授时": "GNSS timing",
+"未找到 chrony。此页面显示 gnss-ppsd 与 chrony 的 GNSS 授时状态，安装方法见项目文档 docs/gnss.md。": "chrony was not found. This page shows the GNSS timing state of gnss-ppsd and chrony; see docs/gnss.md in the project for how to install them.",
 "频段与频点": "Bands & frequencies",
 "拨号与 SIM": "Data & SIM",
 "消息通知": "Notifications",

@@ -45,7 +45,7 @@ async function freePort() {
     await page.locator('#loginButton').click(); await page.waitForURL(base + '/');
 
     // --- Menu: one entry per view; shared pages show only their view's groups ---
-    assert.equal(await page.locator('.sa-sidebar [data-page-link]').count(), 13);
+    assert.equal(await page.locator('.sa-sidebar [data-page-link]').count(), 14);
     assert.equal(await page.locator('#page-dashboard #eventsApp').count(), 0, 'events moved off the overview');
     await page.goto(base + '/#bands');
     await page.waitForFunction(() => location.hash === '#bands');

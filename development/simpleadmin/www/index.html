@@ -33,11 +33,11 @@
       html[data-bs-theme="light"], html[data-bs-theme="light"] body { background-color: #f2f2f7; color-scheme: light; }
       [v-cloak] { display: none !important; }
     </style>
-<link href="css/app.css?v=4.3" rel="stylesheet"/>
+<link href="css/app.css?v=4.4" rel="stylesheet"/>
 <link href="favicon.ico" rel="icon"/>
 <script src="js/band_map.js?v=2.94"></script>
 <script src="js/vue.global.prod.js"></script>
-<script src="js/locales.js?v=3.5"></script>
+<script src="js/locales.js?v=3.6"></script>
 <script src="js/simpleadmin-core.js?v=3.4"></script>
 <script src="js/vue-app.js?v=2.94"></script>
 </head>
@@ -56,6 +56,7 @@
 <p class="sa-menu-section">设备</p>
 <a aria-current="page" class="sa-menu-link active" data-page-link="dashboard" href="#dashboard"><i data-lucide="layout-dashboard" aria-hidden="true"></i><span>总览</span></a>
 <a class="sa-menu-link" data-page-link="events" href="#events"><svg class="lucide" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg><span>网络事件</span></a>
+<a class="sa-menu-link" data-page-link="gnss" data-gnss-link="1" hidden href="#gnss"><svg class="lucide" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 7 9 3 5 7l4 4"/><path d="m17 11 4 4-4 4-4-4"/><path d="m8 12 4 4 6-6-4-4Z"/><path d="m16 8 3-3"/><path d="M9 21a6 6 0 0 0-6-6"/></svg><span>GNSS 授时</span></a>
 <p class="sa-menu-section">网络</p>
 <a class="sa-menu-link" data-page-link="bands" href="#bands"><i data-lucide="radio" aria-hidden="true"></i><span>频段与频点</span></a>
 <a class="sa-menu-link" data-page-link="cells" href="#cells"><svg class="lucide" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.9 16.1C1 12.2 1 5.8 4.9 1.9"/><path d="M7.8 4.7a6.14 6.14 0 0 0-.8 7.5"/><circle cx="12" cy="9" r="2"/><path d="M16.2 4.8c2 2 2.26 5.11.8 7.47"/><path d="M19.1 1.9a9.96 9.96 0 0 1 0 14.1"/><path d="M9.5 18h5"/><path d="m8 22 4-11 4 11"/></svg><span>小区锁定</span></a>
@@ -908,6 +909,20 @@
 </div>
 </section>
 
+<section aria-labelledby="page-title-gnss" class="sa-page" data-page="gnss" id="page-gnss">
+<div class="sa-page-titlebar">
+<div class="sa-page-title-main">
+<h1 data-simpleadmin-i18n-key="GNSS 授时" id="page-title-gnss">GNSS 授时</h1>
+</div>
+</div>
+<div class="sa-page-app sa-gnss-page">
+<div class="ui-card sa-gnss-missing" id="gnssMissing" hidden><p>未找到 chrony。此页面显示 gnss-ppsd 与 chrony 的 GNSS 授时状态，安装方法见项目文档 docs/gnss.md。</p></div>
+<div class="sa-gnss-panel" id="gnssPanel" hidden>
+<iframe class="sa-gnss-frame" id="gnssFrame" title="GNSS 授时"></iframe>
+</div>
+</div>
+</section>
+
 <section aria-labelledby="page-title-console" class="sa-page" data-page="console" id="page-console">
 <div class="sa-page-titlebar">
 <div class="sa-page-title-main">
@@ -938,6 +953,7 @@
 <div class="ui-sheet-body">
 <div class="ui-card ui-nav-list">
 <button class="ui-row is-link" type="button" data-tab="deviceinfo"><span class="ui-row-icon blue"><i data-lucide="info" aria-hidden="true"></i></span><span class="ui-row-text">设备信息</span><svg class="ui-icon ui-chevron" aria-hidden="true"><use href="#i-chevron"/></svg></button>
+<button class="ui-row is-link" type="button" data-tab="gnss" data-gnss-link="1" hidden><span class="ui-row-icon green"><svg class="lucide" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 7 9 3 5 7l4 4"/><path d="m17 11 4 4-4 4-4-4"/><path d="m8 12 4 4 6-6-4-4Z"/><path d="m16 8 3-3"/><path d="M9 21a6 6 0 0 0-6-6"/></svg></span><span class="ui-row-text">GNSS 授时</span><svg class="ui-icon ui-chevron" aria-hidden="true"><use href="#i-chevron"/></svg></button>
 <button class="ui-row is-link" type="button" data-tab="console"><span class="ui-row-icon gray"><i data-lucide="terminal" aria-hidden="true"></i></span><span class="ui-row-text">控制台</span><svg class="ui-icon ui-chevron" aria-hidden="true"><use href="#i-chevron"/></svg></button>
 </div>
 <div class="ui-card">
@@ -1000,7 +1016,8 @@
 <script src="js/pages/forwarding-guides.js?v=0.2.9"></script>
 <script src="js/pages/forwarding.js?v=0.3.0"></script>
 <script src="js/pages/deviceinfo.js?v=2.94"></script>
-<script src="js/simpleadmin-spa.js?v=3.1"></script>
+<script src="js/pages/gnss.js?v=1.0"></script>
+<script src="js/simpleadmin-spa.js?v=3.2"></script>
 <script src="js/monitor-vendor.js?v=3.2"></script>
 <script src="js/monitor.js?v=3.5"></script>
 <script src="js/shell.js?v=1.2"></script>

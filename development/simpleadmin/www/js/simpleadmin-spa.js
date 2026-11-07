@@ -10,6 +10,8 @@
     { id: 'sms', selector: '#smsApp', factoryName: 'sms', title: '短信' },
     { id: 'notify', selector: '#forwardingApp', factoryName: 'forwarding', title: '消息通知' },
     { id: 'deviceinfo', selector: '#deviceinfoApp', factoryName: 'deviceinfo', title: '设备信息' },
+    // Loaded by js/pages/gnss.js once the server says chrony is installed.
+    { id: 'gnss', selector: null, factoryName: null, title: 'GNSS 授时' },
     { id: 'console', selector: null, factoryName: null, title: '控制台', frameSelector: '#consoleFrame', frameSrc: '/console' }
   ];
   // Menu entries. Several views can share one page (one Vue app): the page then shows only
@@ -27,6 +29,7 @@
     { id: 'at', page: 'settings', group: 'system', title: 'AT 终端' },
     { id: 'system', page: 'settings', group: 'system', title: '系统设置' },
     { id: 'deviceinfo', page: 'deviceinfo', group: 'more', title: '设备信息' },
+    { id: 'gnss', page: 'gnss', group: 'more', title: 'GNSS 授时' },
     { id: 'console', page: 'console', group: 'more', title: '控制台' }
   ];
   // Tab-bar groups open the view last shown in them, or this one the first time.
