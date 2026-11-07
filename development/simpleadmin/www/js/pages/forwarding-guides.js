@@ -51,10 +51,10 @@
       url: "https://bark.day.app/",
       steps: [
         ["在 iPhone 上安装 Bark，打开后复制首页的推送地址，例如 https://api.day.app/xxxxxxxx/。", "Install Bark on the iPhone and copy the push URL on its home screen, for example https://api.day.app/xxxxxxxx/."],
-        ["地址中服务器之后的那一段是设备 Key，填入“设备 Key”，多台设备用逗号分隔。自建服务器只把服务器部分（如 https://bark.example.com）填入“服务器地址”；用官方服务器则留空。", "The part after the server is the device key; enter it under Device keys, separating several devices with commas. For a self-hosted server enter only the server part (such as https://bark.example.com) under Server; leave it blank for the official server."],
+        ["地址中服务器之后的那一段是设备 Key，填入“设备 Key”，多台设备每行一个。自建服务器只把服务器部分（如 https://bark.example.com）填入“服务器地址”；用官方服务器则留空。", "The part after the server is the device key; enter it under Device keys, one per line for several devices. For a self-hosted server enter only the server part (such as https://bark.example.com) under Server; leave it blank for the official server."],
         ["启用并保存渠道，点击测试推送，确认每台设备都收到。短信推送的标题为“设备名称-号码”，内容为短信原文。", "Enable and save the channel, then send a test and check every device. SMS notifications are titled “device name-number” and carry the message text unchanged."]
       ],
-      note: ["设备 Key 留空保留已存 Key，已存 Key 不回传到浏览器。每台设备分别推送；某台失败时 3 分钟内只对它重试，已收到的设备不会重复收到。超过 3000 字节的短信分段推送，标题后加 (1/2) 等编号。", "A blank Device keys field keeps the saved keys, which are never sent back to the browser. Each device is notified separately; if one fails, only that device is retried, for up to 3 minutes. Messages over 3000 bytes are split, with (1/2) and so on after the title."]
+      note: ["服务器地址和设备 Key 保存后显示在框中，可直接修改。每台设备分别推送；某台失败时 3 分钟内只对它重试，已收到的设备不会重复收到。超过 3000 字节的短信分段推送，标题后加 (1/2) 等编号。", "The saved server and device keys are shown in the fields and can be edited there. Each device is notified separately; if one fails, only that device is retried, for up to 3 minutes. Messages over 3000 bytes are split, with (1/2) and so on after the title."]
     },
     sim: {
       url: "",

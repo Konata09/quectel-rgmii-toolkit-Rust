@@ -574,8 +574,8 @@ impl Forwarder {
     fn snapshot_locked(&self, s: &State) -> Value {
         let channels: Vec<_> = s.settings.channels.iter().map(|c|{
             let mut v=json!({"platform":c.platform,"enabled":c.enabled,"number":c.number,"has_url":!c.url.is_empty(),"has_token":!c.token.is_empty(),"has_secret":!c.secret.is_empty()});
-            // A Bark server address carries no credential; the device keys stay hidden.
-            if c.platform=="bark" {v["server"]=json!(c.url);}
+            // Bark's server address and device keys are shown on the page and edited in place.
+            if c.platform=="bark" {v["server"]=json!(c.url);v["keys"]=json!(c.token);}
             v
         }).collect();
         let st = &s.settings;
@@ -593,6 +593,11 @@ impl Forwarder {
                 c.number.clear();
                 c.enabled = false;
                 c.clear = false;
+                continue;
+            }
+            // The page shows Bark's saved values, so what it sends is the whole setting:
+            // a blank server means the public one, blank keys mean none.
+            if c.platform == "bark" {
                 continue;
             }
             if let Some(old) = state

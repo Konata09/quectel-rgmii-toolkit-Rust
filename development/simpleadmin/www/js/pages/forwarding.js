@@ -58,13 +58,15 @@
     "invalid device name": "Invalid device name",
     "wait before testing again": "Wait before testing again",
     "服务器地址": "Server",
-    "留空则使用框内显示的地址": "Leave blank to keep the address shown",
+    "留空使用官方服务器 api.day.app": "Leave blank for the official server, api.day.app",
     "设备 Key": "Device keys",
-    "多个设备用逗号分隔": "Separate several keys with commas",
+    "每行一个，多台设备分行填写": "One key per line",
     "invalid Bark device key": "Invalid Bark device key",
     "invalid Bark server URL": "Invalid Bark server address"
   };
   const chinese = {sent:'已送达',retrying:'重试中',failed:'失败',test:'测试推送','SMS read failed':'短信读取失败','retry window expired':'已超过 3 分钟重试上限','queue capacity exceeded':'推送队列已满','network or TLS request failed':'网络连接或证书验证失败','enable at least one channel':'短信转发请至少选择一个已启用的渠道','choose an enabled channel for outage notices':'断网恢复通知请至少选择一个已启用的渠道','invalid outage threshold':'断网时长阈值需在 10–3600 秒之间','invalid ServerChan Turbo SendKey':'Server酱 Turbo SendKey 无效','invalid webhook URL':'Webhook URL 无效','webhook does not match selected platform':'Webhook 地址与平台不匹配','webhook token missing':'Webhook 地址缺少令牌','invalid device name':'设备名称无效','wait before testing again':'请稍后再次测试','invalid Bark device key':'Bark 设备 Key 无效','invalid Bark server URL':'Bark 服务器地址无效'};
+  // Bark device keys: one per line on the page, comma separated when saved.
+  const barkKeys = text => [...new Set(String(text || '').split(/[\s,，;]+/).filter(Boolean))];
   root.Pages.forwarding = function () {
     return {
       language: root.Lang.getCurrentLanguage(), enabled:false,sms_enabled:true,delete_after_day:false,device_name:'',channels:[],selected:'serverchan',
@@ -81,7 +83,7 @@
       time(value) {return new Intl.DateTimeFormat(this.language,{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'}).format(new Date(value));},
       changed() {for(const c of this.channels) {if(c.clear && (c.url || c.token || c.secret || c.number)) c.clear=false;}this.dirty=true;this.message='';},
       // A channel counts as set up once it is switched on and has its credentials.
-      ready_channel(c) {if(!c.enabled) return false;if(c.platform==='sim') return !!(c.number||'').trim();if(c.platform==='bark') return c.has_token||!!(c.token||'').trim();return c.has_url||c.has_token||!!(c.url||c.token||'').trim();},
+      ready_channel(c) {if(!c.enabled) return false;if(c.platform==='sim') return !!(c.number||'').trim();if(c.platform==='bark') return !!(c.token||'').trim();return c.has_url||c.has_token||!!(c.url||c.token||'').trim();},
       usable() {return this.channels.filter(c=>this.ready_channel(c));},
       togglePlatform(list,platform) {const i=this[list].indexOf(platform);if(i===-1)this[list].push(platform);else this[list].splice(i,1);this.changed();},
       async request(path,data) {
@@ -94,7 +96,7 @@
         this.queued=data.queued;this.ready=data.ready;this.records=data.records;this.error=data.error;
         this.sms_enabled=data.sms_enabled;this.delete_after_day=data.delete_after_day;
         if (form) {
-          this.enabled=data.enabled;this.device_name=data.device_name;this.channels=data.channels.map(c=>({...c,url:'',token:'',secret:'',clear:false}));
+          this.enabled=data.enabled;this.device_name=data.device_name;this.channels=data.channels.map(c=>c.platform==='bark' ? {...c,url:c.server||'',token:barkKeys(c.keys).join('\n'),secret:'',clear:false} : {...c,url:'',token:'',secret:'',clear:false});
           this.sms_platforms=[...(data.sms_platforms||[])];this.outage_enabled=!!data.outage_enabled;this.outage_platforms=[...(data.outage_platforms||[])];this.outage_min_seconds=data.outage_min_seconds||60;
           this.dirty=false;this.loaded=true;
         }
@@ -108,7 +110,7 @@
       async save() {
         this.busy=true;this.message='';
         try {
-          const channels=this.channels.map(({platform,enabled,url,token,secret,number,clear})=>({platform,enabled,url:url.trim(),token:token.trim(),secret:secret.trim(),number:(number||'').trim(),clear}));
+          const channels=this.channels.map(({platform,enabled,url,token,secret,number,clear})=>({platform,enabled,url:url.trim(),token:platform==='bark'?barkKeys(token).join(','):token.trim(),secret:secret.trim(),number:(number||'').trim(),clear}));
           const current=await this.request('/api/forwarding');this.sms_enabled=current.sms_enabled;this.delete_after_day=current.delete_after_day;
           const minimum=Math.round(Number(this.outage_min_seconds));
           this.apply(await this.request('/api/forwarding/save',{enabled:this.enabled,sms_enabled:this.sms_enabled,delete_after_day:this.delete_after_day,device_name:this.device_name,channels,

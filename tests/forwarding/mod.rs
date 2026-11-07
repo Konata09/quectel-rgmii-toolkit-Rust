@@ -807,3 +807,44 @@ async fn bark_reaches_each_device_once_and_resumes_with_the_failed_one() {
     );
     server.abort();
 }
+#[tokio::test]
+async fn bark_settings_are_shown_and_saved_as_sent() {
+    let (f, _dir) = forwarder();
+    let mut s = Settings::default();
+    let bark = s
+        .channels
+        .iter()
+        .position(|c| c.platform == "bark")
+        .unwrap();
+    s.channels[bark].enabled = true;
+    s.channels[bark].url = "https://bark.example.com".into();
+    s.channels[bark].token = "keyA,keyB".into();
+    s.channels[4].url = "http://127.0.0.1/hook".into();
+    s.channels[4].token = "Bearer kept".into();
+    let shown = f.save(s.clone()).await.unwrap();
+    assert_eq!(shown["channels"][bark]["server"], "https://bark.example.com");
+    assert_eq!(shown["channels"][bark]["keys"], "keyA,keyB");
+    assert!(
+        !shown.to_string().contains("Bearer kept"),
+        "other credentials stay hidden"
+    );
+    // The page sends Bark's fields as shown, so blanks are not refilled from the saved
+    // settings; other channels still keep their hidden values when left blank.
+    let mut next = s.clone();
+    next.channels[bark].enabled = false;
+    next.channels[bark].url.clear();
+    next.channels[bark].token.clear();
+    next.channels[4].url.clear();
+    next.channels[4].token.clear();
+    let shown = f.save(next).await.unwrap();
+    assert_eq!(shown["channels"][bark]["server"], "");
+    assert_eq!(shown["channels"][bark]["keys"], "");
+    assert_eq!(shown["channels"][bark]["has_token"], false);
+    assert_eq!(shown["channels"][4]["has_token"], true);
+    let mut keyless = s.clone();
+    keyless.channels[bark].token.clear();
+    assert!(
+        f.save(keyless).await.is_err(),
+        "an enabled Bark channel needs keys"
+    );
+}

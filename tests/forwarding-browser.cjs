@@ -54,15 +54,17 @@ const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     assert.equal((await api('/api/forwarding')).data.channels[4].has_token,true);assert(!(JSON.stringify((await api('/api/forwarding')).data)).includes('local-test'));
     await page.locator('#forward-panel-webhook').getByRole('button',{name:'测试推送',exact:true}).click();await page.waitForFunction(()=>SimpleAdmin.Vue.apps['#forwardingApp'].message==='测试成功');
     assert.equal(received.length,1);assert.equal(received[0].body.sender,'SimpleAdmin');assert.equal(received[0].body.text,'SimpleAdmin notification test');assert.equal(received[0].headers.authorization,'Bearer local-test');
-    // Bark: the server address is shown once saved, the device keys are not; each key gets its own push.
+    // Bark: server address and device keys are shown once saved; each key gets its own push.
     await page.locator('#forward-tab-bark').click();
     assert.equal(await page.locator('#forward-url-bark').getAttribute('placeholder'),'https://api.day.app');
     assert(await page.locator('#forward-panel-bark').getByRole('button',{name:'测试推送',exact:true}).isDisabled());
-    await page.locator('#forward-url-bark').fill('http://127.0.0.1:18087');await page.locator('#forward-token-bark').fill('keyA, keyB');await page.locator('#forward-channel-bark').check();
+    await page.locator('#forward-url-bark').fill('http://127.0.0.1:18087');await page.locator('#forward-token-bark').fill('keyA\n keyB, keyA');await page.locator('#forward-channel-bark').check();
     await page.locator('.sa-forward-toolbar button[type="submit"]').click();await page.waitForFunction(()=>!SimpleAdmin.Vue.apps['#forwardingApp'].dirty && !SimpleAdmin.Vue.apps['#forwardingApp'].busy);
     const saved=(await api('/api/forwarding')).data;const barkSaved=saved.channels.find(c=>c.platform==='bark');
-    assert.equal(barkSaved.server,'http://127.0.0.1:18087');assert.equal(barkSaved.has_token,true);assert(!JSON.stringify(saved).includes('keyA'));
-    assert.equal(await page.locator('#forward-url-bark').getAttribute('placeholder'),'http://127.0.0.1:18087');assert.equal(await page.locator('#forward-token-bark').inputValue(),'');
+    assert.equal(barkSaved.server,'http://127.0.0.1:18087');assert.equal(barkSaved.keys,'keyA,keyB');assert.equal(barkSaved.has_token,true);
+    // The saved server and keys are shown in the fields, also after a reload.
+    await page.reload();await showForwarding();await page.locator('#forward-tab-bark').click();
+    assert.equal(await page.locator('#forward-url-bark').inputValue(),'http://127.0.0.1:18087');assert.equal(await page.locator('#forward-token-bark').inputValue(),'keyA\nkeyB');
     await page.waitForTimeout(5000); // one test notification per 5 seconds
     await page.locator('#forward-panel-bark').getByRole('button',{name:'测试推送',exact:true}).click();await page.waitForFunction(()=>SimpleAdmin.Vue.apps['#forwardingApp'].message==='测试成功');
     assert.deepEqual(barks.map(b=>b.body),['keyA','keyB'].map(device_key=>({title:'Mock SMS module-SimpleAdmin',body:'SimpleAdmin notification test',device_key})));
