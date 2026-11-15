@@ -8,6 +8,7 @@ mod cell_lock;
 mod cleanup;
 mod console;
 mod events;
+mod fm350;
 mod forwarding;
 mod freq_lock;
 mod gnss;
@@ -90,10 +91,18 @@ fn collect_devices(explicit: &str, file: &std::path::Path) -> Vec<String> {
             .map(str::trim)
             .filter(|s| !s.is_empty())
         {
-            if path == "/dev/smd11" && !devices.contains(&path.to_string()) {
+            if fm350::is_allowed_at_device(path) && !devices.contains(&path.to_string()) {
                 devices.push(path.into())
             }
         }
+    }
+    if (devices.is_empty()
+        || (devices.len() == 1
+            && devices[0] == "/dev/smd11"
+            && !std::path::Path::new("/dev/smd11").exists()))
+        && let Some(port) = fm350::discover_at_port()
+    {
+        return vec![port];
     }
     if devices.is_empty() {
         devices.push("/dev/smd11".into())
@@ -244,6 +253,9 @@ fn entry() -> Result<()> {
             }
         }
         app.start();
+        if !app.config.mock {
+            fm350::start_gnss_backup();
+        }
         if app.config.no_tls {
             let listener = tokio::net::TcpListener::bind(listen_address(&app.config.http)).await?;
             println!("HTTP listening on {}", listener.local_addr()?);

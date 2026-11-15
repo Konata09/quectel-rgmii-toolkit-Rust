@@ -37,9 +37,12 @@ impl Store {
     pub fn new(mock: bool) -> Self {
         let managed = !mock
             && cfg!(target_os = "linux")
-            && std::env::var("SIMPLEADMIN_MANAGE_ROOTFS")
-                .map(|v| v == "1" || v == "true")
-                .unwrap_or_else(|_| Path::new("/dev/smd11").exists());
+            && match std::env::var("SIMPLEADMIN_MANAGE_ROOTFS").ok().as_deref() {
+                Some("force") => true,
+                Some("0") | Some("false") => false,
+                Some("1") | Some("true") | None => Path::new("/dev/smd11").exists(),
+                _ => false,
+            };
         Self {
             managed,
             lock: Mutex::new(()),

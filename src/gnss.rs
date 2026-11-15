@@ -291,7 +291,7 @@ fn signal(sys: &str, id: u32) -> u32 {
         ("GP", 1) | ("GL", 1) | ("GQ", 1) => 0,
         ("GP", 7) => 6,
         ("GP", 8) => 7,
-        ("GL", 3) | ("GA", 7) | ("GB", 1) => 2,
+        ("GL", 3) | ("GA", 7) | ("GB" | "BD", 1) => 2,
         ("GA", 1) => 5,
         ("GA", 2) => 8,
         ("GQ", 8) => 8,
@@ -310,7 +310,7 @@ impl Nmea {
             "GP" => (id, 0, b'G', 1),
             "GL" => (id, 6, b'R', 2),
             "GA" => (300 + id, 2, b'E', 3),
-            "GB" => (400 + id, 3, b'B', 4),
+            "GB" | "BD" => (400 + id, 3, b'B', 4),
             "GQ" => (192 + id, 5, b'Q', 5),
             "GI" => (800 + id, 7, b'I', 6),
             _ => return,
@@ -708,6 +708,13 @@ pub fn build(i: &Inputs) -> (String, Record) {
     } else {
         i.model
     };
+    let is_fm350 = model.to_ascii_uppercase().contains("FM350");
+    let device = if is_fm350 {
+        format!("{model} @ FM350 GNSS (:19091)")
+    } else {
+        format!("{model} @ AT+QGPSGNMEA")
+    };
+    let vendor = if is_fm350 { "Fibocom" } else { "Quectel" };
     let live = Live {
         ts: i.now,
         sources: sources(i.sources),
@@ -732,9 +739,9 @@ pub fn build(i: &Inputs) -> (String, Record) {
             vdop: or_na(&nmea.vdop),
             pdop: or_na(&nmea.pdop),
             ept: "N/A",
-            device: format!("{model} @ AT+QGPSGNMEA"),
+            device,
             device_extended: format!(
-                "Hardware: &nbsp;Quectel {model}\nFirmware: &nbsp;{}\nGPS Active Since: &nbsp;{}",
+                "Hardware: &nbsp;{vendor} {model}\nFirmware: &nbsp;{}\nGPS Active Since: &nbsp;{}",
                 i.firmware, i.started
             ),
             gpsd_version: "",

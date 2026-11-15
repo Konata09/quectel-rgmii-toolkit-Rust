@@ -499,7 +499,20 @@ impl Watchdog {
         let raw = at.run("AT+QUIMSLOT?").await?;
         let slot = parser::lines(&raw)
             .filter_map(|l| l.trim().strip_prefix("+QUIMSLOT:"))
-            .find_map(|v| v.trim().parse::<u32>().ok());
+            .find_map(|v| v.trim().parse::<u32>().ok())
+            .or_else(|| {
+                parser::lines(&raw)
+                    .filter_map(|l| l.split_once(':'))
+                    .filter(|(k, _)| k.trim() == "+GTDUALSIM")
+                    .find_map(|(_, v)| {
+                        let f = parser::fields(v);
+                        match f.first().map(String::as_str) {
+                            Some("0") => Some(1),
+                            Some("1") => Some(2),
+                            _ => None,
+                        }
+                    })
+            });
         let other = match slot {
             Some(1) => 2,
             Some(2) => 1,

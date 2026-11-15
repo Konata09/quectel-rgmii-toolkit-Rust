@@ -138,7 +138,7 @@
 <div v-if="!compactNetworkInfo"><dt>CELL ID</dt><dd v-text="formatSensitiveValue(cellID, 'id')"></dd></div>
 <div v-if="!compactNetworkInfo"><dt>eNB ID</dt><dd v-text="formatSensitiveValue(eNBID, 'id')"></dd></div>
 <div v-if="!compactNetworkInfo"><dt>TAC</dt><dd v-text="formatSensitiveValue(tac, 'id')"></dd></div>
-<div class="art-antenna-row"><dt>RSRP 天线 <small>dBm</small></dt><dd class="art-antenna-values"><span v-for="(value, index) in [prxqrsrp, drxqrsrp, rx2qrsrp, rx3qrsrp]" :key="index"><small>{{ ['PRX','DRX','RX2','RX3'][index] }}</small>{{ value === '-' ? '--' : value }}</span></dd></div>
+<div class="art-antenna-row"><dt>RSRP 天线 <small>dBm</small></dt><dd class="art-antenna-values"><template v-for="(value, index) in [prxqrsrp, drxqrsrp, rx2qrsrp, rx3qrsrp]" :key="index"><span v-if="index === 0 || (value && value !== '-' && value !== 'None')"><small>{{ ['PRX','DRX','RX2','RX3'][index] }}</small>{{ value === '-' || value === 'None' ? '--' : value }}</span></template></dd></div>
 </dl></section>
 </div>
 <footer class="art-network-footer"><div class="art-update-label"><span></span>更新时间 <b v-text="lastUpdate"></b></div><div class="art-refresh-control"><label for="overviewRefresh">刷新间隔</label><input id="overviewRefresh" :placeholder="refreshRate" class="form-control" max="60" min="2" type="number" v-model="newRefreshRate" aria-label="刷新间隔（秒）"/><span>秒</span><button @click="updateRefreshRate()" class="art-icon-button" type="button" title="保存刷新间隔" aria-label="保存刷新间隔"><i data-lucide="check" aria-hidden="true"></i></button></div></footer>
@@ -277,9 +277,9 @@
 <div class="ui-row sa-freq-suggest" v-if="freqSuggestions().length"><span class="ui-row-label">从扫描结果添加</span><div class="sa-chip-group"><button v-for="s in freqSuggestions()" :key="s.arfcn" type="button" class="sa-chip" @click="addFreqEntry(s.arfcn, s.scs)" :disabled="freqBusy" data-no-i18n>{{ s.arfcn }} · n{{ s.band }} · {{ s.scs }} kHz</button></div></div>
 <div class="ui-row is-stack"><span class="ui-row-label">生效方式</span><div class="ui-row-control"><div class="ui-segmented sa-lock-mode" role="radiogroup" aria-label="频点锁定生效方式"><label><input type="radio" name="freq-lock-mode" value="temporary" v-model="freqPersistence"/><span>临时（重启后失效）</span></label><label><input type="radio" name="freq-lock-mode" value="persistent" v-model="freqPersistence"/><span>持久（重启后自动恢复）</span></label></div></div></div>
 <label class="ui-row is-toggle"><span class="ui-row-text"><span>锁定保护</span><small>30 秒内找不到可用小区，自动恢复锁定前的状态（与频段锁定共用此开关）</small></span><input id="freqGuardSwitch" class="form-check-input ui-switch" type="checkbox" role="switch" :checked="bandGuard" @change="setBandGuard($event.target.checked)"/></label>
-<div class="ui-actions"><span class="ui-status" id="freqMessage" :class="{'text-danger': freqFailed}" role="status" aria-live="polite" v-text="freqMessage"></span><button type="button" class="btn btn-secondary" @click="addFreqEntry()" :disabled="freqBusy || freqEntries.length >= 32">添加频点</button><button type="button" class="btn btn-primary" id="freqLockButton" @click="lockFreq()" :disabled="freqBusy || freq.cell_lock_nr" v-text="tr(freqPersistence === 'persistent' ? '持久锁定频点' : '临时锁定频点')"></button></div>
+<div class="ui-actions"><span class="ui-status" id="freqMessage" :class="{'text-danger': freqFailed}" role="status" aria-live="polite" v-text="freqMessage"></span><button type="button" class="btn btn-primary" id="freqLockButton" @click="lockFreq()" :disabled="freqBusy || freq.cell_lock_nr" v-text="tr(freqPersistence === 'persistent' ? '持久锁定频点' : '临时锁定频点')"></button></div>
 </div>
-<p class="ui-foot">模块只使用列出的 5G 频点（最多 32 个），介于频段锁定和小区锁定之间，重启模块后需由程序重新应用（选“持久”）。提交时会校验：频点须在运营商配置和当前频段内；SCS 须与频段及实际小区一致，填错会找不到小区；与不允许的其他频段重叠的频点（如 n41 中与 n7 重叠的 2.62 GHz 以上部分）会被拒绝，实测锁定这类频点会使基带崩溃。只提供 5G：实测 LTE 频点锁定也会使本模块基带崩溃。</p>
+<p class="ui-foot">FM350-GL 每次仅支持锁定 1 个 NR5G 频点，介于频段锁定和小区锁定之间，重启模块后需由程序重新应用（选“持久”）。</p>
 </section>
 
 <section class="ui-group" aria-labelledby="networkParamsTitle" data-views="connection">
@@ -351,35 +351,10 @@
 <div class="ui-card sa-network-switches">
 <div class="ui-row"><div class="ui-row-text"><span>IMS / VoLTE</span><small id="imsState" v-text="imsText()"></small></div>
 <div class="ui-segmented sa-switch-segmented" role="radiogroup" aria-label="IMS / VoLTE"><button v-for="option in imsOptions" :key="option.value" type="button" role="radio" :class="{active: pdp.ims === option.value}" :aria-checked="pdp.ims === option.value" :disabled="pdpBusy || pdp.ims === null" @click="pdp.ims !== option.value && setIms(option.value)" v-text="tr(option.label)"></button></div></div>
-<label class="ui-row is-toggle"><span class="ui-row-text"><span>SIM 热插拔检测</span><small v-text="pdp.sim_detect === null ? tr('读取失败') : (pdp.sim_detect ? tr('已开启 · 拔插 SIM 卡后自动识别') : tr('已关闭 · 换卡后需重启模块'))"></small></span><input id="simDetectSwitch" class="form-check-input ui-switch" type="checkbox" role="switch" :checked="!!pdp.sim_detect" :disabled="pdpBusy || pdp.sim_detect === null" @click.prevent="setSimDetect(!pdp.sim_detect)"/></label>
-<label class="ui-row is-toggle"><span class="ui-row-text"><span>数据漫游</span><small v-text="roamingText()"></small></span><input id="roamingSwitch" class="form-check-input ui-switch" type="checkbox" role="switch" :checked="pdp.roaming !== null && pdp.roaming !== 1" :disabled="pdpBusy || pdp.roaming === null" @click.prevent="setRoaming(pdp.roaming === 1)"/></label>
 <div class="ui-row"><div class="ui-row-text"><span>SIM 卡槽</span><small v-text="pdp.sim_slot ? tr('正在使用卡槽') + ' ' + pdp.sim_slot : tr('读取失败')"></small></div>
 <div class="ui-segmented sa-switch-segmented" role="radiogroup" aria-label="SIM 卡槽"><button v-for="slot in [1, 2]" :key="slot" type="button" role="radio" :class="{active: pdp.sim_slot === slot}" :aria-checked="pdp.sim_slot === slot" :disabled="pdpBusy || !pdp.sim_slot" @click="pdp.sim_slot !== slot && setSimSlot(slot)" v-text="tr('卡槽') + ' ' + slot"></button></div></div>
 </div>
-<p class="ui-foot">高亮的选项和打开的开关就是当前设置。IMS 和 SIM 热插拔检测在重启模块后生效；切换卡槽会立即重新注册网络。</p>
-</section>
-
-<section class="ui-group" aria-labelledby="mbnTitle" data-views="bands">
-<div class="ui-group-head"><h2 id="mbnTitle">运营商配置（MBN）</h2><span class="ui-sub" id="mbnSummary" v-text="mbnActive() ? tr('当前：') + mbnActive().name : ''"></span></div>
-<div class="ui-card sa-mbn">
-<label class="ui-row is-toggle"><span class="ui-row-text"><span>自动选择</span><small>按 SIM 卡自动选择运营商配置；手动选择配置时会关闭</small></span><input id="mbnAutoSel" class="form-check-input ui-switch" type="checkbox" role="switch" :checked="mbn.auto_select === true" :disabled="mbnBusy || mbn.auto_select === null" @click.prevent="setMbnAutoSel(!mbn.auto_select)"/></label>
-<div class="ui-row"><div class="ui-row-text"><span>当前配置允许的频段</span><small data-no-i18n>SA: {{ mbnBands(mbn.policy_sa_bands) }}</small></div></div>
-<div class="ui-scroll-x sa-mbn-table">
-<table class="table">
-<thead><tr><th scope="col">配置</th><th scope="col">版本</th><th scope="col">状态</th><th scope="col">操作</th></tr></thead>
-<tbody id="mbnTableBody">
-<tr v-if="!mbn.profiles.length"><td colspan="4" class="ui-empty" v-text="mbnLoaded ? tr('模块未返回 MBN 列表') : tr('正在读取...')"></td></tr>
-<tr v-for="profile in mbnShown()" :key="profile.index" class="sa-mbn-row" :class="{'is-selected': profile.active}">
-<td data-no-i18n>{{ profile.name }}</td><td data-no-i18n class="sa-mbn-version">{{ profile.version }}</td>
-<td><span class="ui-tag" :class="profile.active ? 'is-good' : (profile.selected ? 'is-warn' : '')" v-text="profile.active ? tr('使用中') : (profile.selected ? tr('已选择，重启后生效') : tr('未使用'))"></span></td>
-<td><button type="button" class="btn btn-outline-primary btn-sm sa-mbn-select" :disabled="mbnBusy || profile.selected" @click="selectMbn(profile)">选用</button></td>
-</tr>
-</tbody>
-</table>
-</div>
-<div class="ui-actions"><button v-if="mbn.profiles.length > mbnShown().length || mbnExpanded" type="button" class="art-text-button" id="mbnToggle" @click="mbnExpanded = !mbnExpanded" v-text="mbnExpanded ? tr('收起') : tr('显示全部') + ' ' + mbn.profiles.length"></button><span class="ui-status" id="mbnMessage" :class="{'text-danger': mbnFailed}" role="status" aria-live="polite" v-text="mbnMessage"></span><button v-if="mbnRebootNeeded" type="button" class="btn btn-warning" id="mbnReboot" @click="rebootForMbn()">立即重启模块</button><button type="button" class="btn btn-secondary" @click="loadMbn(true)" :disabled="mbnBusy">刷新</button></div>
-</div>
-<p class="ui-foot">MBN 决定模块允许使用的频段和 VoLTE 等设置。例如移动配置下 SA 只允许 n28、n41，无法锁定 n78。更换配置后需重启模块。</p>
+<p class="ui-foot">高亮的选项就是当前设置。切换卡槽会立即重新注册网络。</p>
 </section>
 
 <section class="ui-group" aria-labelledby="cellLockTitle" data-views="cells">
@@ -427,7 +402,7 @@
 </div>
 <p class="ui-note sa-scan-age" id="scanAge" v-if="scanAgeText()" v-text="scanAgeText()"></p>
 <div class="ui-actions sa-cell-scan-actions">
-<span class="ui-status" id="cellSelectHelper" :class="{'text-danger': scanNote}" v-text="scanNote || (scanKind === 'neighbour' ? tr('点选结果行后锁定：LTE 可多选（最多 10 个），NR5G-SA 只能选 1 个。') : tr('点选结果行后锁定：LTE 可多选（最多 10 个），NR5G-SA 只能选 1 个。完整扫描需要几分钟，在后台进行，可以离开此页面。'))"></span>
+<span class="ui-status" id="cellSelectHelper" :class="{'text-danger': scanNote}" v-text="scanNote || (scanKind === 'neighbour' ? tr('点选结果行后锁定：每次仅支持锁定 1 个小区。') : tr('点选结果行后锁定：每次仅支持锁定 1 个小区。完整扫描需要几分钟，在后台进行，可以离开此页面。'))"></span>
 <button :disabled="isLoading || lockBusy || !resultDoneCell" @click="clearTableRowsBodyCellScan()" class="btn btn-danger" type="button">清除</button>
 <button id="cellLockSelected" :disabled="selectedCells.length === 0 || isLoading || lockBusy" @click="lockSelectedCells()" class="btn btn-primary" type="button" v-text="lockSelectedText()"></button>
 </div>
@@ -446,16 +421,11 @@
 <option value="解锁NR5G-SA">解锁NR5G-SA小区</option>
 </select></div></div>
 <div id="lteElementsCell" v-show="networkModeCell == 'LTE'">
-<div class="ui-row is-stack"><label for="lteCellCount">小区数量</label><div class="ui-row-control"><input id="lteCellCount" @change="normalizeLteCellCount()" @input="normalizeLteCellCount()" class="form-control" max="10" min="1" placeholder="1-10" type="number" v-model="cellNum"/></div></div>
-</div>
-<template v-if="hasLteManualCellCount()">
-<div id="freqNumbersContainer">
-<div :key="'lte-manual-cell-' + index" class="ui-row is-stack" v-for="index in visibleLteCellIndexes()"><span class="ui-row-label" data-no-i18n>#{{ index }}</span><div class="ui-row-control input-group">
-<input :aria-label="'EARFCN ' + index" :placeholder="'EARFCN ' + index" :value="getLteManualValue(index, 'earfcn')" @input="setLteManualValue(index, 'earfcn', $event.target.value)" class="form-control" type="text" inputmode="numeric"/>
-<input :aria-label="'PCI ' + index" :placeholder="'PCI ' + index" :value="getLteManualValue(index, 'pci')" @input="setLteManualValue(index, 'pci', $event.target.value)" class="form-control" type="text" inputmode="numeric"/>
+<div class="ui-row is-stack"><span class="ui-row-label" data-no-i18n>EARFCN / PCI</span><div class="ui-row-control input-group">
+<input aria-label="EARFCN" class="form-control" placeholder="EARFCN" type="text" inputmode="numeric" v-model="earfcn1"/>
+<input aria-label="PCI" class="form-control" placeholder="PCI" type="text" inputmode="numeric" v-model="pci1"/>
 </div></div>
 </div>
-</template>
 <div id="saElementsCell" v-show="networkModeCell == 'NR5G-SA'">
 <div class="ui-row is-stack"><span class="ui-row-label" data-no-i18n>EARFCN / PCI</span><div class="ui-row-control input-group">
 <input aria-label="EARFCN" class="form-control" placeholder="EARFCN" type="text" inputmode="numeric" v-model="earfcn1"/>
@@ -537,49 +507,9 @@
 <section class="ui-group" aria-labelledby="networkFeaturesHeading" data-views="lan">
 <div class="ui-group-head"><h2 id="networkFeaturesHeading">网络功能</h2></div>
 <div class="ui-card sa-tools">
-<div class="ui-row is-stack"><label for="ipPassModeSelect">IP 透传</label><div class="ui-row-control">
-<select class="form-select" id="ipPassModeSelect" v-model="ipPassMode">
-<option disabled="" v-text="ipPassStatus ? '当前：已启用' : '当前：未启用'" value="未指定"></option>
-<option value="ETH">ETH</option>
-<option value="USB">USB (ECM/RNDIS)</option>
-</select>
-<button :disabled="isLoading" @click="ipPassThroughEnable()" class="btn btn-primary" type="button" v-show="ipPassStatus === false">启用</button>
-<button :disabled="isLoading" @click="ipPassThroughDisable()" class="btn btn-danger" type="button" v-show="ipPassStatus === true">禁用</button>
-</div></div>
-<div class="ui-row is-stack"><label for="usbNetModeSelect">USB 协议</label><div class="ui-row-control">
-<select class="form-select" id="usbNetModeSelect" v-model="usbNetMode">
-<option disabled="" v-text="'当前：' + currentUsbNetMode" value="未指定"></option>
-<option value="RMNET">RMNET</option>
-<option value="ECM">ECM (推荐)</option>
-<option value="MBIM">MBIM</option>
-<option value="RNDIS">RNDIS</option>
-</select>
-<button :disabled="isLoading" @click="usbNetModeChanger()" class="btn btn-primary" type="button">更改</button>
-</div></div>
-<div class="ui-row is-stack"><label for="dmzInput">DMZ 设置</label><div class="ui-row-control">
-<input id="dmzInput" class="form-control" placeholder="DMZ IP 地址" type="text" inputmode="decimal" v-model="dmzIP"/>
-<button :disabled="isLoading" @click="setDMZEnable()" class="btn btn-primary" type="button" v-show="dmzMode === '0'">启用</button>
-<button :disabled="isLoading" @click="setDMZDisable()" class="btn btn-danger" type="button" v-show="dmzMode === '1'">禁用</button>
-</div></div>
-<div class="ui-row is-stack"><label for="lanGwInput">LAN IP 设置</label><div class="ui-row-control sa-lan-ip-fields">
-<input id="lanGwInput" class="form-control" placeholder="网关 IP 地址" type="text" inputmode="decimal" v-model="lanGwIp"/>
-<input class="form-control" placeholder="起始地址" aria-label="起始地址" type="text" inputmode="numeric" v-model="lanIpStart"/>
-<input class="form-control" placeholder="结束地址" aria-label="结束地址" type="text" inputmode="numeric" v-model="lanIpEnd"/>
-<button :class="['btn', lanIpSaveSuccess ? 'btn-success' : 'btn-primary']" :disabled="isLoading || isSavingLANIP" @click="setLANIP()" type="button">{{ lanIpSaveSuccess ? '成功' : '保存' }}</button>
-</div></div>
 <div class="ui-row is-stack"><label for="imeiInput">IMEI 设置</label><div class="ui-row-control">
 <input @keydown.enter.prevent="openImeiModal()" class="form-control" id="imeiInput" inputmode="numeric" placeholder="请输入新的 IMEI" type="text" v-model.trim="newImei"/>
 <button :disabled="isLoading || isRebooting" @click="openImeiModal()" class="btn btn-primary" type="button">更新</button>
-</div></div>
-<div class="ui-row"><span class="ui-row-label">DNS 代理 IPv4</span><div class="ui-row-control">
-<span class="ui-tag" :class="DNSV4ProxyStatus ? 'is-good' : ''" v-text="DNSV4ProxyStatus ? '已启用' : '未启用'"></span>
-<button :disabled="isLoading" @click="onBoardDNSV4ProxyEnable()" class="btn btn-sm" type="button" v-show="DNSV4ProxyStatus === false">启用</button>
-<button :disabled="isLoading" @click="onBoardDNSV4ProxyDisable()" class="btn btn-danger btn-sm" type="button" v-show="DNSV4ProxyStatus === true">禁用</button>
-</div></div>
-<div class="ui-row"><span class="ui-row-label">DNS 代理 IPv6</span><div class="ui-row-control">
-<span class="ui-tag" :class="DNSV6ProxyStatus ? 'is-good' : ''" v-text="DNSV6ProxyStatus ? '已启用' : '未启用'"></span>
-<button :disabled="isLoading" @click="onBoardDNSV6ProxyEnable()" class="btn btn-sm" type="button" v-show="DNSV6ProxyStatus === false">启用</button>
-<button :disabled="isLoading" @click="onBoardDNSV6ProxyDisable()" class="btn btn-danger btn-sm" type="button" v-show="DNSV6ProxyStatus === true">禁用</button>
 </div></div>
 </div>
 <p class="ui-foot" :class="{ 'is-error': networkFailed }" id="networkFeatureMessage" role="status" aria-live="polite" v-show="networkMessage" v-text="networkMessage"></p>
@@ -610,32 +540,6 @@
 </div>
 <p class="ui-foot" id="ttlMessage" role="status" aria-live="polite" v-show="ttlMessage" v-text="ttlMessage"></p>
 <p class="ui-foot" id="ttlValueHelper">设置 TTL 值为 0 以禁用。</p>
-</section>
-
-<section class="ui-group sa-ota" aria-labelledby="otaHeading" data-views="system">
-<div class="ui-group-head"><h2 id="otaHeading">在线更新</h2></div>
-<div class="ui-card">
-<div class="ui-row"><span class="ui-row-label">当前版本</span><div class="ui-row-control"><span class="ui-tag" id="otaCurrent" data-no-i18n v-text="'v' + (ota.current || '-')"></span></div></div>
-<div class="ui-row is-stack"><span class="ui-row-label">最新版本</span><div class="ui-row-control">
-<span class="ui-tag" id="otaLatest" :class="otaHasUpdate() ? 'is-good' : ''" v-text="otaLatestText()"></span>
-<a v-if="ota.latest && ota.latest.url" :href="ota.latest.url" target="_blank" rel="noopener" class="btn btn-sm btn-outline-primary">更新说明</a>
-<button id="otaCheckButton" class="btn btn-sm" type="button" :disabled="otaBusy()" @click="otaCheck()">检查更新</button>
-<button id="otaInstallButton" class="btn btn-sm btn-primary" type="button" v-show="otaHasUpdate()" :disabled="otaBusy()" @click="otaInstall()">立即更新</button>
-</div></div>
-<div class="ui-row is-stack" v-show="ota.phase === 'downloading' || ota.phase === 'installing'"><span class="ui-row-label" v-text="otaPhaseText()"></span><div class="ui-row-control"><progress class="sa-ota-progress" :value="ota.phase === 'downloading' ? ota.received : null" :max="ota.total || 1"></progress><span class="ui-tag" data-no-i18n v-show="ota.phase === 'downloading' && ota.total" v-text="otaPercent()"></span></div></div>
-</div>
-<p class="ui-foot" :class="{ 'is-error': otaFailed }" id="otaMessage" role="status" aria-live="polite" v-show="otaMessage" v-text="otaMessage"></p>
-<details class="sa-ota-log" v-if="ota.last_result && !ota.last_result.ok && ota.last_result.log"><summary>安装日志</summary><pre data-no-i18n v-text="ota.last_result.log"></pre></details>
-<form @submit.prevent="otaSave()" class="ui-card sa-ota-settings">
-<div class="ui-row is-stack"><label for="otaMode">自动更新</label><div class="ui-row-control">
-<select id="otaMode" class="form-select" v-model="otaForm.mode"><option value="off">关闭</option><option value="check">每天检查，手动安装</option><option value="auto">每天检查并自动安装</option></select>
-</div></div>
-<div class="ui-row is-stack"><label for="otaSource">更新源</label><div class="ui-row-control"><input id="otaSource" class="form-control" type="text" autocapitalize="none" spellcheck="false" :placeholder="ota.default_source || 'owner/repo'" v-model.trim="otaForm.source"/></div></div>
-<div class="ui-row is-stack"><label for="otaProxy">GitHub 代理</label><div class="ui-row-control"><input id="otaProxy" class="form-control" type="text" autocapitalize="none" spellcheck="false" placeholder="留空则直连 GitHub" v-model.trim="otaForm.proxy"/></div></div>
-<div class="ui-row is-stack"><label for="otaKey">验证公钥</label><div class="ui-row-control"><input id="otaKey" class="form-control" type="text" autocapitalize="none" spellcheck="false" placeholder="可选，自定义源的 Ed25519 公钥" v-model.trim="otaForm.public_key"/></div></div>
-<div class="ui-actions"><span class="ui-status" role="status" aria-live="polite" v-text="otaSaveMessage"></span><button type="submit" class="btn btn-primary" :disabled="otaSaving">保存</button></div>
-</form>
-<p class="ui-foot">更新源填写 GitHub 仓库（owner/repo）或存放更新文件的网址；代理只用于 GitHub，可填写前缀或含 {url} 的模板。安装包必须带有效签名，只会升级到更高版本，账号密码与端口保持不变。</p>
 </section>
 
 <section class="ui-group" aria-labelledby="atTerminalHeading" data-views="at">
@@ -895,7 +799,6 @@
 <section class="ui-group" aria-labelledby="deviceNetworkTitle">
 <div class="ui-group-head"><h2 id="deviceNetworkTitle">网络地址</h2></div>
 <div class="ui-card sa-info-list">
-<div class="ui-row"><span class="ui-row-label">局域网IP</span><span class="ui-row-value" v-text="lanIp"></span></div>
 <div class="ui-row"><span class="ui-row-label">广域网IPv<sup>4</sup></span><span class="ui-row-value" v-text="formatSensitiveValue(wwanIpv4, 'ipv4')"></span></div>
 <div class="ui-row"><span class="ui-row-label">广域网IPv<sup>6</sup></span><span class="ui-row-value" v-text="formatSensitiveValue(wwanIpv6, 'ipv6')"></span></div>
 </div>

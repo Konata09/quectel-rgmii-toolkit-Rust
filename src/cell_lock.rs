@@ -60,12 +60,23 @@ struct Settings {
 /// SA bands the active carrier configuration (MBN) allows; empty when unknown.
 /// The user band list can include more, but the modem rejects locks outside this one.
 fn policy_nr_bands(raw: &str) -> Vec<u32> {
-    raw.lines()
+    let list: Vec<u32> = raw
+        .lines()
         .filter_map(|line| line.trim().strip_prefix("+QNWPREFCFG:"))
         .map(parser::fields)
         .find(|p| p.len() > 1 && p[0] == "nr5g_band")
         .map(|p| p[1].split(':').filter_map(|b| b.parse().ok()).collect())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    if !list.is_empty() {
+        return list;
+    }
+    if raw.contains("+GTACT:") {
+        let m = parser::mbn(raw);
+        if let Some(s) = m["policy_sa_bands"].as_str() {
+            return s.split(':').filter_map(|b| b.parse().ok()).collect();
+        }
+    }
+    vec![]
 }
 /// Runs a lock or unlock. The modem answers +CME ERROR: 904 to an unlock when
 /// nothing is locked, so an unlock also succeeds once the modem reports no lock.
@@ -78,11 +89,12 @@ async fn run_lock(at: &At, radio: usize, command: &str) -> Result<String> {
         let query = PREFIXES[radio].trim_end_matches(',');
         if let Ok(state) = at.run(query).await
             && parser::ok(&state)
-            && state
+            && (state
                 .lines()
                 .filter_map(|line| line.trim().strip_prefix("+QNWLOCK:"))
                 .map(parser::fields)
                 .any(|p| p.len() > 1 && query.ends_with(&format!("\"{}\"", p[0])) && p[1] == "0")
+                || state.contains("+EMMCHLCK: 0"))
         {
             return Ok(state);
         }
@@ -381,8 +393,17 @@ impl CellLock {
     }
 }
 pub(crate) fn dialed(raw: &str) -> bool {
+    let valid_ip = |ip: IpAddr| {
+        !ip.is_unspecified()
+            && !ip.is_loopback()
+            && !ip.is_multicast()
+            && match ip {
+                IpAddr::V4(ip) => !ip.is_link_local(),
+                IpAddr::V6(ip) => !ip.is_unicast_link_local(),
+            }
+    };
     parser::ok(raw)
-        && raw
+        && (raw
             .lines()
             .filter_map(|line| line.trim().strip_prefix("+QMAP:"))
             .any(|line| {
@@ -390,16 +411,20 @@ pub(crate) fn dialed(raw: &str) -> bool {
                 fields.len() >= 5
                     && fields[0].eq_ignore_ascii_case("WWAN")
                     && matches!(fields[3].as_str(), "IPV4" | "IPV6")
-                    && fields[4].parse::<IpAddr>().is_ok_and(|ip| {
-                        !ip.is_unspecified()
-                            && !ip.is_loopback()
-                            && !ip.is_multicast()
-                            && match ip {
-                                IpAddr::V4(ip) => !ip.is_link_local(),
-                                IpAddr::V6(ip) => !ip.is_unicast_link_local(),
-                            }
-                    })
+                    && fields[4].parse::<IpAddr>().is_ok_and(valid_ip)
             })
+            || raw
+                .lines()
+                .filter_map(|line| line.trim().strip_prefix("+CGPADDR:"))
+                .any(|line| {
+                    let fields = parser::fields(line);
+                    fields.len() >= 2
+                        && (fields[0] != "1" || !raw.contains("\"ims\""))
+                        && fields[1..]
+                            .iter()
+                            .filter_map(|a| parser::parse_pdp_ip(a))
+                            .any(valid_ip)
+                }))
 }
 
 #[cfg(test)]

@@ -12,9 +12,17 @@ impl Metrics {
         if mock {
             return json!({"cpuUsagePercent":36,"ramUsagePercent":58,"ramUsedHuman":"1.2 GB","ramTotalHuman":"2.0 GB"});
         }
+        let remote = crate::fm350::read_module_proc_files();
+        let (stat_raw, mem_raw) = match remote {
+            Some((stat, mem, _)) => (stat, mem),
+            None => (
+                std::fs::read_to_string("/proc/stat").unwrap_or_default(),
+                std::fs::read_to_string("/proc/meminfo").unwrap_or_default(),
+            ),
+        };
         let mut percent = 0;
-        if let Ok(raw) = std::fs::read_to_string("/proc/stat") {
-            let values: Vec<u64> = raw
+        if !stat_raw.is_empty() {
+            let values: Vec<u64> = stat_raw
                 .lines()
                 .next()
                 .unwrap_or("")
@@ -37,9 +45,8 @@ impl Metrics {
                 *prev = Some((total, idle));
             }
         }
-        let raw = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
         let mut values = HashMap::new();
-        for line in raw.lines() {
+        for line in mem_raw.lines() {
             let mut p = line.split_whitespace();
             if let (Some(k), Some(v)) = (p.next(), p.next()) {
                 values.insert(k, v.parse::<u64>().unwrap_or(0));
@@ -59,9 +66,14 @@ pub fn uptime(mock: bool) -> (Value, String) {
     let seconds = if mock {
         93000
     } else {
-        std::fs::read_to_string("/proc/uptime")
-            .ok()
-            .and_then(|v| v.split_whitespace().next()?.parse::<f64>().ok())
+        let raw = crate::fm350::read_module_proc_files()
+            .map(|(_, _, u)| u)
+            .filter(|u| !u.trim().is_empty())
+            .or_else(|| std::fs::read_to_string("/proc/uptime").ok())
+            .unwrap_or_default();
+        raw.split_whitespace()
+            .next()
+            .and_then(|s| s.parse::<f64>().ok())
             .unwrap_or(0.0) as u64
     };
     let (d, h, m, s) = (
@@ -102,6 +114,10 @@ pub async fn apply_ttl(value: u8, mock: bool) -> Result<Vec<String>> {
         return Ok(vec![format!("TTL {value} applied (mock)")]);
     }
     let mut logs = Vec::new();
+    let ifaces = match crate::fm350::rndis_interface() {
+        Some(rndis) => vec![rndis],
+        None => vec!["rmnet+".to_string()],
+    };
     for (name, target, flag) in [
         ("iptables", "TTL", "--ttl-set"),
         ("ip6tables", "HL", "--hl-set"),
@@ -113,7 +129,7 @@ pub async fn apply_ttl(value: u8, mock: bool) -> Result<Vec<String>> {
             if fields.len() >= 8
                 && fields[0] == "-A"
                 && fields[1] == "POSTROUTING"
-                && pair("-o", "rmnet+")
+                && ifaces.iter().any(|iface| pair("-o", iface.as_str()))
                 && pair("-j", target)
                 && fields.contains(&flag)
             {
@@ -123,22 +139,24 @@ pub async fn apply_ttl(value: u8, mock: bool) -> Result<Vec<String>> {
             }
         }
         if value > 0 {
-            command(
-                name,
-                &[
-                    "-t",
-                    "mangle",
-                    "-I",
-                    "POSTROUTING",
-                    "-o",
-                    "rmnet+",
-                    "-j",
-                    target,
-                    flag,
-                    &value.to_string(),
-                ],
-            )
-            .await?;
+            for iface in &ifaces {
+                command(
+                    name,
+                    &[
+                        "-t",
+                        "mangle",
+                        "-I",
+                        "POSTROUTING",
+                        "-o",
+                        iface,
+                        "-j",
+                        target,
+                        flag,
+                        &value.to_string(),
+                    ],
+                )
+                .await?;
+            }
         }
         logs.push(format!("{name}: TTL {value}"));
     }

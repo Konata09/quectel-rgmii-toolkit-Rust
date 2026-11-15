@@ -71,6 +71,24 @@ fn band_list(raw: &str, keys: &[&str]) -> Vec<u32> {
             }
         }
     }
+    if bands.is_empty() && raw.contains("+GTACT:") {
+        let parsed = parser::bands(raw);
+        let s = parsed["locked_sa_bands"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .unwrap_or_else(|| {
+                parser::mbn(raw)["policy_sa_bands"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_owned()
+            });
+        for band in s.split(':').filter_map(|b| b.parse().ok()) {
+            if !bands.contains(&band) {
+                bands.push(band);
+            }
+        }
+    }
     bands
 }
 /// NR bands the lock may use: the carrier configuration's (`policy`, from

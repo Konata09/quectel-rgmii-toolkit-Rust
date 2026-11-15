@@ -377,6 +377,7 @@ impl Monitor {
             let mut resolver = crate::resolver::PingResolver::default();
             let mut client4 = None;
             let mut client6 = None;
+            let mut bound_iface: Option<String> = None;
             let mut seq = 0u16;
             loop {
                 let current = *schedule.borrow_and_update();
@@ -433,6 +434,15 @@ impl Monitor {
                     ip = "192.0.2.1".into();
                 } else {
                     let deadline = started + budget;
+                    #[cfg(target_os = "linux")]
+                    let current_iface = crate::fm350::rndis_interface();
+                    #[cfg(not(target_os = "linux"))]
+                    let current_iface: Option<String> = None;
+                    if current_iface != bound_iface {
+                        client4 = None;
+                        client6 = None;
+                        bound_iface = current_iface;
+                    }
                     let address = resolver.resolve(&target, deadline).await;
                     if let Some(address) = address {
                         ip = address.to_string();
@@ -442,16 +452,17 @@ impl Monitor {
                             &mut client6
                         };
                         if slot.is_none() {
-                            *slot = surge_ping::Client::new(
-                                &surge_ping::Config::builder()
-                                    .kind(if address.is_ipv4() {
-                                        surge_ping::ICMP::V4
-                                    } else {
-                                        surge_ping::ICMP::V6
-                                    })
-                                    .build(),
-                            )
-                            .ok()
+                            #[allow(unused_mut)]
+                            let mut builder = surge_ping::Config::builder().kind(if address.is_ipv4() {
+                                surge_ping::ICMP::V4
+                            } else {
+                                surge_ping::ICMP::V6
+                            });
+                            #[cfg(target_os = "linux")]
+                            if let Some(ref iface) = bound_iface {
+                                builder = builder.interface(iface);
+                            }
+                            *slot = surge_ping::Client::new(&builder.build()).ok();
                         }
                         if let Some(client) = slot {
                             let mut pinger = client
@@ -476,7 +487,10 @@ impl Monitor {
                                         (rtt.as_secs_f64() * 10000.0).round().min(65534.0) as u16
                                 }
                                 Ok(Err(surge_ping::SurgeError::Timeout { .. })) | Err(_) => {}
-                                Ok(Err(_)) => sample.status = 2,
+                                Ok(Err(_)) => {
+                                    sample.status = 2;
+                                    *slot = None;
+                                }
                             }
                         } else {
                             sample.status = 2

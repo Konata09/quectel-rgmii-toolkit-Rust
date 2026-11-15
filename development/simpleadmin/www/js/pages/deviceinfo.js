@@ -13,7 +13,6 @@ function fetchDeviceInfo() {
           imsi: "-",
           iccid: "-",
           imei: "-",
-          lanIp: "-",
           wwanIpv4: "-",
           wwanIpv6: "-",
           phoneNumber: "-",
@@ -82,7 +81,6 @@ function fetchDeviceInfo() {
                 imsi: data.imsi || '-',
                 iccid: data.iccid || '-',
                 imei: data.imei || '-',
-                lanIp: data.lanIp || '-',
                 wwanIpv4: data.wwanIpv4 || '-',
                 wwanIpv6: data.wwanIpv6 || '-',
                 phoneNumber: data.phoneNumber || '未插卡'

@@ -38,9 +38,17 @@ pub fn action(command: &str) -> bool {
         "+QNWCFG=\"NR5G_MEAS_INFO\",",
         "+QNWCFG=\"NR5G_EARFCN_LOCK\",",
         "+QNWCFG=\"LTE_EARFCN_LOCK\",",
+        "+EGMREXT=1,",
+        "+GTDUALSIM=",
+        "+GTUSBMODE=",
+        "+EMBIND=",
+        "+CAVIMS=",
+        "+CASIMS=",
     ]
     .iter()
     .any(|p| upper.contains(p.trim_end()))
+        || (upper.contains("+GTACT=") && !upper.contains("+GTACT=?"))
+        || (upper.contains("+EMMCHLCK=") && !upper.contains("+EMMCHLCK=?"))
 }
 pub fn timeout(command: &str) -> Duration {
     let parts = crate::at::split(command);
@@ -76,6 +84,13 @@ pub fn timeout(command: &str) -> Duration {
                 {
                     // Setting or clearing a lock re-selects the cell; an RM520N-EU answers after ~1.3 s.
                     10000
+                } else if (up.contains("+GTACT=") && !up.contains("+GTACT=?"))
+                    || (up.contains("+EMMCHLCK=") && !up.contains("+EMMCHLCK=?"))
+                    || up.contains("+GTDUALSIM=")
+                {
+                    10000
+                } else if up.contains("+EMBIND=") {
+                    5000
                 } else if up == "AT+CPIN?" {
                     // The manual allows 5 s; without a SIM the module can take that long to say so.
                     5000

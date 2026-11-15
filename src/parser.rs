@@ -461,6 +461,7 @@ pub fn dashboard(raw: &str) -> Value {
             _ => {}
         }
     }
+    crate::fm350::augment_dashboard(&mut d, raw, &mut sum, &mut count, &mut sim);
     if count > 0 {
         d["temperature"] = json!(((sum + count / 2) / count).to_string())
     }
@@ -652,6 +653,7 @@ pub fn device(raw: &str) -> Value {
             d["phoneNumber"] = json!("无本机号码")
         }
     }
+    crate::fm350::augment_device(&mut d, raw);
     d
 }
 pub fn bands(raw: &str) -> Value {
@@ -667,6 +669,7 @@ pub fn bands(raw: &str) -> Value {
         };
         out[key] = json!(&p[2]);
     }
+    crate::fm350::augment_bands(&mut out, raw);
     out
 }
 pub fn network(raw: &str) -> Value {
@@ -726,6 +729,7 @@ pub fn network(raw: &str) -> Value {
     if !names.is_empty() {
         out["bands"] = json!(names.join(" / "))
     }
+    crate::fm350::augment_network(&mut out, raw);
     out
 }
 pub fn settings(raw: &str) -> Value {
@@ -774,7 +778,11 @@ pub fn settings(raw: &str) -> Value {
             out["imei"] = json!(v.as_str())
         }
     }
+    crate::fm350::augment_settings(&mut out, raw);
     out
+}
+pub fn parse_pdp_ip(raw: &str) -> Option<std::net::IpAddr> {
+    pdp_address(raw)
 }
 /// A PDP address from AT+CGPADDR: IPv4, or IPv6 written as 16 dotted decimal bytes (the
 /// module's default) or in colon form. Unassigned addresses are dropped.
@@ -846,6 +854,7 @@ pub fn pdp(raw: &str) -> Value {
         context["ipv6"] = json!(ips.iter().find(|ip| ip.is_ipv6()).map(|ip| ip.to_string()));
     }
     out["contexts"] = json!(contexts);
+    crate::fm350::augment_pdp(&mut out, raw);
     out
 }
 pub fn scan(raw: &str) -> Value {
@@ -889,6 +898,7 @@ pub fn scan(raw: &str) -> Value {
             lte.push(cell)
         }
     }
+    crate::fm350::augment_neighbours_and_scan(&mut nr, &mut lte, raw, true);
     json!({"nr5g_cells_parsed":nr,"lte_cells_parsed":lte})
 }
 /// QSCAN and QENG report `<scs>` as an index while QNWLOCK takes kHz; "-" means not reported.
@@ -919,12 +929,33 @@ pub fn cell_locks(raw: &str) -> Value {
             _ => {}
         }
     }
+    crate::fm350::augment_cell_locks(&mut out, raw);
     out
 }
 /// NR frequency lock from `AT+QNWCFG="nr5g_earfcn_lock"`, e.g.
 /// `+QNWCFG: "nr5g_earfcn_lock",2,504990:30:513000:30`, as (arfcn, scs) pairs; empty when
 /// unlocked, `None` when the answer has no such line.
 pub fn nr_freq_lock(raw: &str) -> Option<Vec<(u32, u32)>> {
+    for line in lines(raw) {
+        if let Some(tail) = line.trim().strip_prefix("+EMMCHLCK:")
+            && !tail.contains('(')
+        {
+            let p = fields(tail);
+            if p.first().is_some_and(|m| m == "0") {
+                return Some(vec![]);
+            }
+            if p.len() >= 4 && p[0] == "1" && p[1] == "11" {
+                // Non-empty field 4 is PCI (cell lock), while empty field 4 is frequency-only lock.
+                if p.get(4).is_some_and(|s| !s.trim().is_empty()) {
+                    return Some(vec![]);
+                }
+                let arfcn: u32 = p[3].parse().ok()?;
+                let band = crate::fm350::preferred_nr_band(arfcn).unwrap_or(78);
+                let scs = crate::fm350::default_nr_scs(band).unwrap_or(30);
+                return Some(vec![(arfcn, scs)]);
+            }
+        }
+    }
     let p = lines(raw)
         .filter_map(|l| l.trim().strip_prefix("+QNWCFG:"))
         .map(fields)
@@ -1071,6 +1102,7 @@ pub fn mbn(raw: &str) -> Value {
         }
     }
     out["profiles"] = json!(profiles);
+    crate::fm350::augment_mbn(&mut out, raw);
     out
 }
 /// Serving cell plus the LTE neighbours from `AT+QENG="servingcell";+QENG="neighbourcell"`.
@@ -1157,6 +1189,7 @@ pub fn neighbours(raw: &str) -> Value {
         let same = serving_freq == Some(arfcn);
         nr.push(json!({"type":"NR5G","role":if same {"同频邻区"} else {"异频邻区"},"band":band,"freq":arfcn.to_string(),"pci":pci.to_string(),"rsrp":rsrp,"scs":scs}));
     }
+    crate::fm350::augment_neighbours_and_scan(&mut nr, &mut lte, raw, false);
     json!({"nr5g_cells_parsed":nr,"lte_cells_parsed":lte})
 }
 #[cfg(test)]

@@ -6,17 +6,8 @@ function cellLocking() {
         bandView: "LTE",
         countdown: 0,
         networkModeCell: "-",
-        // 兼容现有绑定（10 组 EARFCN/PCI）
+        // 仅保留 EARFCN / PCI（FM350-GL 每次最多锁定 1 个小区）
         earfcn1: null, pci1: null,
-        earfcn2: null, pci2: null,
-        earfcn3: null, pci3: null,
-        earfcn4: null, pci4: null,
-        earfcn5: null, pci5: null,
-        earfcn6: null, pci6: null,
-        earfcn7: null, pci7: null,
-        earfcn8: null, pci8: null,
-        earfcn9: null, pci9: null,
-        earfcn10: null, pci10: null,
         scs: null,
         band: null,
         apn: "-",
@@ -24,7 +15,6 @@ function cellLocking() {
         prefNetwork: "-",
         prefNetworkMode: null,
         nrModeControl: "-",
-        cellNum: null,
         lte_bands: null,
         nsa_bands: null,
         sa_bands: null,
@@ -38,10 +28,10 @@ function cellLocking() {
         lockPersistence: 'temporary', lockAutoUnlock: true, lockBusy: false, lockMessage: '', lockRadios: [],
         lockTimer: null, lockEventsBound: false, lockRefreshBusy: false,
         lockLanguage: SimpleAdmin.Lang.getCurrentLanguage(),
-        pdp: { contexts: [], ims: null, volte: null, sim_detect: null, sim_detect_level: null, roaming: null, sim_slot: null },
+        pdp: { contexts: [], ims: null, volte: null, sim_slot: null },
         pdpLoaded: false, pdpBusy: false, pdpMessage: '', pdpFailed: false,
         pdpForm: { open: false, editing: false, cid: '', type: 'IPV4V6', apn: '' },
-        imsOptions: [{ value: 0, label: '跟随 MBN' }, { value: 1, label: '强制开启' }, { value: 2, label: '强制关闭' }],
+        imsOptions: [{ value: 0, label: '已关闭' }, { value: 1, label: '已开启' }],
         // ---------- PDP 上下文与网络功能开关 ----------
         tr(key) {
           return this.lockLanguage === 'zh-CN' ? key : SimpleAdmin.Lang.t(key);
@@ -150,20 +140,7 @@ function cellLocking() {
           return this.tr(option.label) + ' · ' + this.tr(this.pdp.volte ? 'VoLTE 可用' : 'VoLTE 不可用');
         },
         setIms(mode) {
-          return this.runPdp({ action: 'ims', mode: String(mode) }, 'IMS 设置在重启模块后生效，确定修改？', '已保存，重启模块后生效');
-        },
-        roamingText() {
-          if (this.pdp.roaming === null || this.pdp.roaming === undefined) return this.tr('读取失败');
-          return this.tr(({ 1: '已关闭（仅本网）', 3: '仅友好网络', 255: '已开启' })[this.pdp.roaming] || '已开启');
-        },
-        setRoaming(enabled) {
-          return this.runPdp(
-            { action: 'roaming', enabled: enabled ? '1' : '0' },
-            enabled ? null : '关闭漫游后，在漫游网络下将无法上网。继续？'
-          );
-        },
-        setSimDetect(enabled) {
-          return this.runPdp({ action: 'sim_detect', enabled: enabled ? '1' : '0' }, null, '已保存，重启模块后生效');
+          return this.runPdp({ action: 'ims', mode: String(mode) }, '确定修改 IMS 设置？', '已保存');
         },
         setSimSlot(slot) {
           return this.runPdp({ action: 'sim_slot', slot: String(slot) }, '切换卡槽会断开当前网络，确定切换？', '已切换');
@@ -380,10 +357,8 @@ function cellLocking() {
           const index = this.selectedCells.findIndex(selected => this.cellSelectionKey(selected) === this.cellSelectionKey(cell));
           if (index !== -1) {
             this.selectedCells.splice(index, 1);
-          } else if (cell.type === 'NR5G' || this.selectedType() !== 'LTE') {
-            this.selectedCells = [{ ...cell }];
           } else {
-            this.selectedCells.push({ ...cell });
+            this.selectedCells = [{ ...cell }];
           }
         },
         selectedType() {
@@ -603,7 +578,6 @@ function cellLocking() {
           // 初始化时，禁止用户操作（还没有准备好）
           this._initialized = false;
           this.loadPdp(true);            // PDP 与功能开关独立加载，不阻塞频段查询
-          this.loadMbn();
           this.loadFreqLock();
 
           await this.getModel();          // 先确定型号
@@ -834,17 +808,15 @@ function cellLocking() {
           if (!common.includes(Number(entry.scs))) entry.scs = common.length === 1 ? String(common[0]) : (common.includes(30) && bands.some(([b]) => [41, 77, 78, 79].includes(b)) ? '30' : '');
         },
         addFreqEntry(arfcn, scs) {
-          if (this.freqEntries.length >= 32) return;
-          const empty = this.freqEntries.find((e) => !String(e.arfcn).trim());
-          if (arfcn !== undefined && this.freqEntries.some((e) => String(e.arfcn) === String(arfcn))) return;
-          const entry = empty || { arfcn: '', scs: '' };
-          if (arfcn !== undefined) { entry.arfcn = String(arfcn); entry.scs = scs ? String(scs) : ''; }
-          if (!empty) this.freqEntries.push(entry);
-          if (arfcn !== undefined && !entry.scs) this.freqArfcnChanged(entry);
+          if (arfcn === undefined) return;
+          const entry = this.freqEntries[0] || { arfcn: '', scs: '' };
+          entry.arfcn = String(arfcn);
+          entry.scs = scs ? String(scs) : '';
+          this.freqEntries = [entry];
+          if (!entry.scs) this.freqArfcnChanged(entry);
         },
-        removeFreqEntry(index) {
-          this.freqEntries.splice(index, 1);
-          if (!this.freqEntries.length) this.freqEntries.push({ arfcn: '', scs: '' });
+        removeFreqEntry() {
+          this.freqEntries = [{ arfcn: '', scs: '' }];
         },
         // 扫描结果中的 5G 频点（带 SCS 的），可一键加入。
         freqSuggestions() {
@@ -887,68 +859,6 @@ function cellLocking() {
             await this.loadFreqLock();
           }
         },
-        // ---------- 运营商配置（MBN） ----------
-        mbn: { auto_select: null, profiles: [], policy_sa_bands: null, policy_lte_bands: null },
-        mbnLoaded: false, mbnBusy: false, mbnMessage: '', mbnFailed: false, mbnRebootNeeded: false, mbnExpanded: false,
-        // The module lists dozens of carrier profiles; by default only the active and selected ones.
-        mbnShown() {
-          if (this.mbnExpanded) return this.mbn.profiles;
-          const current = this.mbn.profiles.filter((p) => p.active || p.selected);
-          return current.length ? current : this.mbn.profiles;
-        },
-        async loadMbn(force = false) {
-          try {
-            const data = await SimpleAdmin.Api.networkData(force ? { action: 'mbn', force: '1' } : { action: 'mbn' });
-            if (data && Array.isArray(data.profiles)) this.mbn = data;
-          } catch (error) {
-            this.mbnFailed = true;
-            this.mbnMessage = this.tr('读取失败') + (error.message ? ' · ' + error.message : '');
-          } finally {
-            this.mbnLoaded = true;
-          }
-        },
-        mbnActive() {
-          return this.mbn.profiles.find((p) => p.active) || null;
-        },
-        mbnBands(list) {
-          return list ? list.split(':').map((b) => 'n' + b).join(' ') : '-';
-        },
-        async runMbn(params, confirmText) {
-          if (this.mbnBusy || (confirmText && !window.confirm(this.tr(confirmText)))) return;
-          this.mbnBusy = true;
-          this.mbnFailed = false;
-          this.mbnMessage = this.tr('正在执行...');
-          try {
-            const data = await SimpleAdmin.Api.networkData(params);
-            if (!data || data.ok === false) throw new Error((data && (data.error || data.response)) || '');
-            this.mbnRebootNeeded = true;
-            this.mbnMessage = this.tr('已保存，重启模块后生效');
-          } catch (error) {
-            this.mbnFailed = true;
-            this.mbnMessage = this.tr('操作失败') + (error.message ? ' · ' + error.message : '');
-          } finally {
-            await this.loadMbn(true);
-            this.mbnBusy = false;
-          }
-        },
-        setMbnAutoSel(enabled) {
-          return this.runMbn({ action: 'mbn_autosel', enabled: enabled ? '1' : '0' }, enabled ? null : '关闭自动选择后，换成其他运营商的 SIM 卡时不会自动切换配置。继续？');
-        },
-        selectMbn(profile) {
-          return this.runMbn({ action: 'mbn_select', name: profile.name }, '将关闭自动选择并改用此配置，重启模块后生效。选错配置可能导致无法注册网络，继续？');
-        },
-        async rebootForMbn() {
-          if (!window.confirm(this.tr('立即重启模块？网络会中断约 1 分钟。'))) return;
-          try {
-            await SimpleAdmin.Api.settingsData({ action: 'reboot' });
-            this.mbnMessage = this.tr('模块正在重启，请约 1 分钟后刷新页面');
-            this.mbnRebootNeeded = false;
-          } catch (error) {
-            this.mbnFailed = true;
-            this.mbnMessage = this.tr('操作失败') + (error.message ? ' · ' + error.message : '');
-          }
-        },
-
         async lockSelectedBands() {
           return this.lockSelectedBandsForMode(this.currentNetworkMode || 'LTE');
         },
@@ -1017,103 +927,29 @@ function cellLocking() {
           return this._modelFetchInFlight;
         },
 
-        getLteCellCount() {
-          if (this.cellNum === null || this.cellNum === undefined || this.cellNum === '') return 0;
-          const count = Math.floor(Number(this.cellNum));
-          if (!Number.isFinite(count) || count < 1) return 0;
-          return Math.min(count, 10);
-        },
-
-        hasLteManualCellCount() {
-          return this.networkModeCell === "LTE" && this.getLteCellCount() > 0;
-        },
-
-        visibleLteCellIndexes() {
-          const count = this.getLteCellCount();
-          const indexes = [];
-          for (let i = 1; i <= count; i += 1) indexes.push(i);
-          return indexes;
-        },
-
-        getLteManualValue(index, field) {
-          const suffix = field === 'pci' ? 'pci' : 'earfcn';
-          return this[`${suffix}${index}`] || '';
-        },
-
-        setLteManualValue(index, field, value) {
-          const suffix = field === 'pci' ? 'pci' : 'earfcn';
-          this[`${suffix}${index}`] = value;
-        },
-
-        clearLteManualInputsAfter(count) {
-          for (let i = count + 1; i <= 10; i += 1) {
-            this[`earfcn${i}`] = null;
-            this[`pci${i}`] = null;
-          }
-        },
-
-        resetLteManualInputs() {
-          this.cellNum = null;
-          this.clearLteManualInputsAfter(0);
-        },
-
-        normalizeLteCellCount() {
-          if (this.cellNum === null || this.cellNum === undefined || this.cellNum === '') {
-            this.cellNum = null;
-            this.clearLteManualInputsAfter(0);
-            return;
-          }
-
-          const count = this.getLteCellCount();
-          if (count < 1) {
-            this.cellNum = null;
-            this.clearLteManualInputsAfter(0);
-            return;
-          }
-
-          this.cellNum = count;
-          this.clearLteManualInputsAfter(count);
-        },
-
         onNetworkModeCellChange(event) {
           const selectedMode = event && event.target ? event.target.value : this.networkModeCell;
           this.networkModeCell = selectedMode;
-          if (selectedMode === "LTE") {
-            this.resetLteManualInputs();
+          if (selectedMode === "LTE" || selectedMode === "NR5G-SA") {
+            this.earfcn1 = null;
+            this.pci1 = null;
           }
-        },
-
-        getVisibleLteManualPairs(count) {
-          const pairs = [];
-          for (let i = 1; i <= count; i += 1) {
-            const earfcn = String(this[`earfcn${i}`] || '').trim();
-            const pci = String(this[`pci${i}`] || '').trim();
-            if (!earfcn || !pci) return null;
-            pairs.push({ earfcn, pci });
-          }
-          return pairs;
         },
 
         async cellLockEnableLTE() {
-          const cellNum = this.getLteCellCount();
-          if (cellNum < 1) {
-            alert("请输入要锁定的小区数量");
-            return;
-          }
-
-          const pairs = this.getVisibleLteManualPairs(cellNum);
-          if (!pairs) {
-            alert(`请完整填写 ${cellNum} 组 EARFCN 和 PCI`);
+          const earfcn = String(this.earfcn1 || '').trim();
+          const pci = String(this.pci1 || '').trim();
+          if (!earfcn || !pci) {
+            alert("请完整填写 EARFCN 和 PCI");
             return;
           }
 
           await this.requestCellLock({
             action: 'lock_lte_manual',
-            cellNum,
-            pairs: pairs.map(p => `${p.earfcn},${p.pci}`).join(';')
+            cellNum: 1,
+            pairs: `${earfcn},${pci}`
           });
           await this.startModalCountdown(3);
-          //await this.getCurrentSettings();
           await this.init();
         },
 

@@ -18,25 +18,11 @@ function simpleSettings() {
         ttlvalue: 0,
         ttlStatus: false,
         newTTL: null,
-        ipPassMode: "未指定",
-        ipPassStatus: false,
-        usbNetMode: "未指定",
-        currentUsbNetMode: "未知",
         imei: "-",
         newImei: "",
-        lanIpStart: "",  // 初始化 LAN IP 起始地址
-        lanIpEnd: "",    // 初始化 LAN IP 结束地址
-        lanGwIp: "",     // 初始化 网关 IP 地址
-        isSavingLANIP: false,
         networkMessage: "",
         networkFailed: false,
         ttlMessage: "",
-        lanIpSaveSuccess: false,
-        lanIpSaveSuccessTimer: null,
-        DNSV6ProxyStatus: true,
-        DNSV4ProxyStatus: true,
-        dmzMode: "0",
-        dmzIP: "",
         isRebooted: true,
         language: SimpleAdmin.Lang ? SimpleAdmin.Lang.getCurrentLanguage() : "zh-CN",
         isSavingLanguage: false,
@@ -59,15 +45,6 @@ function simpleSettings() {
         isSavingRootPassword: false,
         rootPasswordSaveMessage: "",
         rebootCountdownTimer: null,
-        ota: { phase: 'idle' },
-        otaForm: { mode: 'check', source: '', proxy: '', public_key: '' },
-        otaFormLoaded: false,
-        otaMessage: "",
-        otaFailed: false,
-        otaSaving: false,
-        otaSaveMessage: "",
-        otaPollTimer: null,
-        otaRestartFrom: "",
 
         t(key) {
           return SimpleAdmin.Lang ? SimpleAdmin.Lang.t(key) : key;
@@ -79,15 +56,6 @@ function simpleSettings() {
             this.language = language;
             return language;
           });
-        },
-
-        resolveDmzMode(mode, ip) {
-          const currentMode = String(mode || '').trim();
-          const currentIp = String(ip || '').trim();
-          if (currentIp && currentIp !== '-') {
-            return '1';
-          }
-          return currentMode === '1' ? '1' : '0';
         },
 
         saveLanguageSetting() {
@@ -360,113 +328,12 @@ function simpleSettings() {
           this.showRebootModal();
         },
 
-        setNetworkMessage(message, failed) {
-          this.networkMessage = message;
-          this.networkFailed = Boolean(failed);
-        },
-
-        // Sends one network feature change and reports the outcome under the list.
-        async runNetworkAction(params) {
-          this.setNetworkMessage("", false);
-          this.isLoading = true;
-          try {
-            const data = await SimpleAdmin.Api.settingsData(params);
-            if (!data || data.ok === false) {
-              throw new Error((data && (data.error || data.response)) || "");
-            }
-            this.setNetworkMessage(this.t("已保存"), false);
-            this.fetchCurrentSettings();
-            return data;
-          } catch (error) {
-            // Keep the entered values so they can be corrected and sent again.
-            const detail = String((error && error.message) || "").trim();
-            this.setNetworkMessage(this.t("保存失败") + (detail ? " · " + detail : ""), true);
-            return null;
-          } finally {
-            this.isLoading = false;
-          }
-        },
-
-        // For settings the module only applies after a reboot (DNS proxy, LAN DHCP pool, USB protocol).
-        async runRebootAction(params) {
-          const data = await this.runNetworkAction(params);
-          if (data) {
-            this.setNetworkMessage(this.t("已保存，重启模块后生效"), false);
-            this.showRebootModal();
-          }
-          return data;
-        },
-
-        async ipPassThroughEnable() {
-          if (this.ipPassMode === "未指定") {
-            this.setNetworkMessage(this.t("请选择 IP 透传模式"), true);
-            return;
-          }
-          await this.runNetworkAction({ action: 'ip_passthrough', enabled: '1', mode: this.ipPassMode });
-        },
-
-        ipPassThroughDisable() {
-          this.showError = false;
-          this.atCommandResponse = this.t("正在禁用 IP 透传，网口会重启，请等待倒计时结束。");
-          this.startRebootCountdown(40);
-
-          SimpleAdmin.Api.settingsData({ action: 'ip_passthrough', enabled: '0' })
-            .then((data) => {
-              if (data && data.response) {
-                this.atCommandResponse = data.response;
-              }
-              if (!this.handleRebootNotice(data) && data && data.ok === false) {
-                this.showError = true;
-              }
-            })
-            .catch((error) => {
-              console.info("禁用 IP 透传期间网口/WebSocket 断开，继续保持重启倒计时：", error);
-              if (!this.isRebooting) {
-                this.startRebootCountdown(40);
-              }
-            });
-        },
-
-        onBoardDNSV6ProxyEnable() {
-          return this.runRebootAction({ action: 'dns_proxy', family: '6', enabled: '1' });
-        },
-        onBoardDNSV4ProxyEnable() {
-          return this.runRebootAction({ action: 'dns_proxy', family: '4', enabled: '1' });
-        },
-
-        onBoardDNSV6ProxyDisable() {
-          return this.runRebootAction({ action: 'dns_proxy', family: '6', enabled: '0' });
-        },
-        onBoardDNSV4ProxyDisable() {
-          return this.runRebootAction({ action: 'dns_proxy', family: '4', enabled: '0' });
-        },
-
-
-        async usbNetModeChanger() {
-          if (!["RMNET", "ECM", "MBIM", "RNDIS"].includes(this.usbNetMode)) {
-            this.setNetworkMessage(this.t("请选择 USB 协议"), true);
-            return;
-          }
-          // The new protocol applies after a reboot; only offer it when the module accepted the change.
-          await this.runRebootAction({ action: 'usbnet', mode: this.usbNetMode });
-        },
-
         fetchCurrentSettings() {
           if (!this.isRebooted) {
             return;  // 如果设备还在重启，跳过
           }
           SimpleAdmin.Api.settingsData({ action: 'status' })
             .then((data) => {
-              this.ipPassStatus = !!data.ipPassStatus;
-              this.DNSV6ProxyStatus = !!data.DNSV6ProxyStatus;
-              this.DNSV4ProxyStatus = !!data.DNSV4ProxyStatus;
-              this.currentUsbNetMode = data.currentUsbNetMode || '未知';
-              const currentDmzIp = String(data.dmzIP || '').trim();
-              this.dmzIP = currentDmzIp;
-              this.dmzMode = this.resolveDmzMode(data.dmzMode, currentDmzIp);
-              this.lanIpStart = data.lanIpStart || '';
-              this.lanIpEnd = data.lanIpEnd || '';
-              this.lanGwIp = data.lanGwIp || '';
               const oldImei = this.imei;
               const currentImei = (data.imei || '').trim();
               if (/^\d{14,17}$/.test(currentImei)) {
@@ -520,226 +387,6 @@ function simpleSettings() {
               this.fetchTTL();
               this.isLoading = false;
             });
-        },
-
-        async setDMZEnable() {
-          const ip = String(this.dmzIP || '').trim();
-          if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(ip) || ip.split('.').some((part) => Number(part) > 255)) {
-            this.setNetworkMessage(this.t("请输入有效的 IP 地址"), true);
-            return;
-          }
-          if (await this.runNetworkAction({ action: 'dmz', enabled: '1', ip })) {
-            this.dmzMode = '1';
-          }
-        },
-
-        async setDMZDisable() {
-          if (await this.runNetworkAction({ action: 'dmz', enabled: '0' })) {
-            this.dmzMode = '0';
-          }
-        },
-        setLANIP() {
-          this.lanIpSaveSuccess = false;
-          if (this.lanIpSaveSuccessTimer) {
-            clearTimeout(this.lanIpSaveSuccessTimer);
-            this.lanIpSaveSuccessTimer = null;
-          }
-
-          // 网关为完整 IPv4，起始/结束只填最后一段，且起始不大于结束。
-          const gateway = String(this.lanGwIp || '').trim();
-          const gwIpParts = gateway.split('.');
-          const octet = (value) => /^\d{1,3}$/.test(String(value).trim()) && Number(value) >= 1 && Number(value) <= 254;
-          if (gwIpParts.length !== 4 || !gwIpParts.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255)
-              || !octet(this.lanIpStart) || !octet(this.lanIpEnd) || Number(this.lanIpStart) > Number(this.lanIpEnd)) {
-            this.setNetworkMessage(this.t("请填写有效的网关地址与 1–254 的起止地址"), true);
-            return;
-          }
-
-          // 使用网关 IP 地址的前三位与用户输入的最后一位拼接成完整的起始和结束 IP
-          const startIp = `${gwIpParts[0]}.${gwIpParts[1]}.${gwIpParts[2]}.${Number(this.lanIpStart)}`;
-          const endIp = `${gwIpParts[0]}.${gwIpParts[1]}.${gwIpParts[2]}.${Number(this.lanIpEnd)}`;
-
-          this.isSavingLANIP = true;
-          // Without <effect> the module applies the new pool after a reboot.
-          return this.runRebootAction({ action: 'lanip', start: startIp, end: endIp, gateway })
-            .then((data) => {
-              if (!data) return;
-              this.lanIpSaveSuccess = true;
-              this.lanIpSaveSuccessTimer = setTimeout(() => {
-                this.lanIpSaveSuccess = false;
-                this.lanIpSaveSuccessTimer = null;
-              }, 3000);
-            })
-            .finally(() => {
-              this.isSavingLANIP = false;
-            });
-        },
-
-        // ---------- 在线更新 ----------
-        otaError(text) {
-          const message = String(text || '');
-          const known = [
-            ['update signature is not trusted', '更新签名无效或不受信任'],
-            ['package checksum does not match', '安装包校验失败'],
-            ['HTTP 404', '更新源中没有找到更新文件'],
-            ['download interrupted', '下载中断'],
-            ['download failed', '下载失败'],
-            ['download is larger than expected', '下载内容大小异常'],
-            ['already running', '已有更新任务在进行'],
-            ['is already the latest release', '已是最新版本'],
-            ['installation failed', '安装失败，请查看安装日志'],
-            ['did not finish within', '安装超过 20 分钟仍未完成'],
-            ['cannot start the installer', '无法在网页服务之外启动安装程序，请使用 Windows 设备助手安装此版本'],
-            ['update source must be', '更新源需为 owner/repo 或 http(s) 地址'],
-            ['GitHub proxy must be', 'GitHub 代理需为 http(s) 地址'],
-            ['public key must be', '公钥需为 Base64 编码的 32 字节 Ed25519 公钥'],
-            ['invalid update manifest', '更新清单无效'],
-          ];
-          const hit = known.find(([key]) => message.includes(key));
-          if (!hit) return message;
-          const detail = hit[1] === '下载失败' || hit[1] === '下载中断' ? message.split(': ').slice(1).join(': ') : '';
-          return this.t(hit[1]) + (detail ? ' · ' + detail : '');
-        },
-        otaApply(data) {
-          if (!data || !data.current) return;
-          this.ota = data;
-          if (!this.otaFormLoaded) {
-            const settings = data.settings || {};
-            this.otaForm = {
-              mode: settings.mode || 'check',
-              source: settings.source === data.default_source ? '' : (settings.source || ''),
-              proxy: settings.proxy || '',
-              public_key: settings.public_key || ''
-            };
-            this.otaFormLoaded = true;
-          }
-          if (data.phase === 'idle' && data.error) {
-            this.otaFailed = true;
-            this.otaMessage = this.otaError(data.error);
-          }
-        },
-        async otaRequest(path, body, timeout) {
-          const options = body === undefined ? { timeout } : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), timeout };
-          const response = await SimpleAdmin.Api.request(path, options);
-          const data = await response.json().catch(() => ({}));
-          if (!response.ok || data.ok === false) throw new Error(this.otaError(data.error) || this.t('请求失败'));
-          return data;
-        },
-        async otaRefresh() {
-          try {
-            this.otaApply(await this.otaRequest('/api/ota'));
-          } catch (_) {
-            return;
-          }
-          if (this.ota.phase !== 'idle') { this.otaPoll(); return; }
-          const last = this.ota.last_result;
-          if (last && !this.otaMessage) {
-            this.otaFailed = !last.ok;
-            this.otaMessage = this.t(last.ok ? '上次在线更新成功' : '上次在线更新失败') + ' · v' + last.version;
-          }
-        },
-        otaBusy() {
-          return Boolean(this.otaRestartFrom) || (this.ota.phase && this.ota.phase !== 'idle');
-        },
-        otaHasUpdate() {
-          return Boolean(this.ota.latest && this.ota.latest.newer);
-        },
-        otaLatestText() {
-          if (this.ota.phase === 'checking') return this.t('检查中...');
-          if (!this.ota.latest) return this.t(this.ota.checked_at ? '无法获取' : '尚未检查');
-          return this.ota.latest.newer ? 'v' + this.ota.latest.version : this.t('已是最新版本');
-        },
-        otaPhaseText() {
-          return this.t(this.ota.phase === 'downloading' ? '正在下载' : '正在安装');
-        },
-        otaPercent() {
-          return Math.min(100, Math.floor(100 * (this.ota.received || 0) / Math.max(1, this.ota.total || 0))) + '%';
-        },
-        async otaCheck() {
-          if (this.otaBusy()) return;
-          this.otaMessage = '';
-          this.otaFailed = false;
-          this.ota = Object.assign({}, this.ota, { phase: 'checking' });
-          try {
-            const data = await this.otaRequest('/api/ota/check', {}, 90000);
-            this.otaApply(data);
-            if (!data.error) {
-              this.otaMessage = this.t(data.latest && data.latest.newer ? '发现新版本' : '已是最新版本');
-            }
-          } catch (error) {
-            this.otaFailed = true;
-            this.otaMessage = error.message;
-            await this.otaRefresh();
-          }
-        },
-        async otaInstall() {
-          if (!this.otaHasUpdate() || this.otaBusy()) return;
-          if (!window.confirm('将下载并安装新版本，安装期间管理页面会断开约一分钟。继续吗？')) return;
-          this.otaMessage = '';
-          this.otaFailed = false;
-          this.otaRestartFrom = this.ota.current;
-          try {
-            this.otaApply(await this.otaRequest('/api/ota/install', {}));
-            this.otaPoll();
-          } catch (error) {
-            this.otaRestartFrom = '';
-            this.otaFailed = true;
-            this.otaMessage = error.message;
-          }
-        },
-        // Plain HTTP polling: the WebSocket goes away while the installer restarts the service.
-        otaPoll() {
-          clearTimeout(this.otaPollTimer);
-          this.otaPollTimer = setTimeout(async () => {
-            let data = null;
-            try {
-              const response = await fetch('/api/ota', { cache: 'no-store', credentials: 'same-origin' });
-              if (response.status === 401) { window.location.replace('/login.html'); return; }
-              if (response.ok) data = await response.json();
-            } catch (_) {
-              // The service is restarting.
-            }
-            if (!data) {
-              this.otaFailed = false;
-              this.otaMessage = this.t('服务正在重启，请稍候…');
-              this.otaPoll();
-              return;
-            }
-            if (this.otaRestartFrom && data.current !== this.otaRestartFrom) {
-              this.otaRestartFrom = '';
-              this.otaApply(data);
-              this.otaFailed = false;
-              this.otaMessage = this.t('更新完成，正在刷新页面');
-              setTimeout(() => window.location.reload(), 1500);
-              return;
-            }
-            this.otaApply(data);
-            if (data.phase !== 'idle') { this.otaPoll(); return; }
-            if (data.error) { this.otaRestartFrom = ''; return; }
-            if (data.mock) {
-              this.otaRestartFrom = '';
-              this.otaFailed = false;
-              this.otaMessage = this.t('预览模式：安装包已校验并解包，未执行安装');
-              return;
-            }
-            this.otaMessage = this.t('安装完成，等待服务重启');
-            this.otaPoll();
-          }, 1500);
-        },
-        async otaSave() {
-          if (this.otaSaving) return;
-          this.otaSaving = true;
-          this.otaSaveMessage = '';
-          try {
-            const data = await this.otaRequest('/api/ota/settings', Object.assign({}, this.otaForm));
-            this.otaFormLoaded = false;
-            this.otaApply(data);
-            this.otaSaveMessage = this.t('已保存');
-          } catch (error) {
-            this.otaSaveMessage = this.t('保存失败') + ' · ' + error.message;
-          } finally {
-            this.otaSaving = false;
-          }
         },
 
         // ---------- 断网自动恢复（看门狗） ----------
@@ -842,7 +489,6 @@ function simpleSettings() {
           this.fetchLanguageSetting();  // 获取界面语言设置
           this.fetchCurrentSettings();  // 发送 AT 命令获取当前设置
           this.fetchTTL();  // 获取 TTL 状态
-          this.otaRefresh();
           this.watchdogLoad();
           // Pages mount once; reload the watchdog state on every return to this page.
           window.addEventListener('simpleadmin:page-changed', (event) => {

@@ -27,16 +27,33 @@ pub struct BandGuard {
 
 /// Band list in an `AT+QNWPREFCFG="<mode>"` answer, e.g. `1:3:5:8`.
 pub fn current_bands(raw: &str, mode: &str) -> Option<String> {
-    raw.lines()
+    if let Some(bands) = raw
+        .lines()
         .filter_map(|line| line.trim().strip_prefix("+QNWPREFCFG:"))
         .map(parser::fields)
         .find(|p| p.len() > 1 && p[0].eq_ignore_ascii_case(mode))
         .map(|p| p[1].clone())
         .filter(|v| !v.is_empty() && v.bytes().all(|c| c.is_ascii_digit() || c == b':'))
+    {
+        return Some(bands);
+    }
+    if raw.contains("+GTACT:") {
+        let b = parser::bands(raw);
+        let key = if mode.eq_ignore_ascii_case("lte_band") {
+            "locked_lte_bands"
+        } else {
+            "locked_sa_bands"
+        };
+        if let Some(s) = b[key].as_str().filter(|s| !s.is_empty()) {
+            return Some(s.to_owned());
+        }
+    }
+    None
 }
 /// Carriers in an `AT+QCAINFO` answer as (primary, NR, band).
 fn carriers(raw: &str) -> Vec<(bool, bool, u32)> {
-    raw.lines()
+    let mut out: Vec<(bool, bool, u32)> = raw
+        .lines()
         .filter_map(|line| line.trim().strip_prefix("+QCAINFO:"))
         .map(parser::fields)
         .filter(|p| p.len() > 3)
@@ -45,18 +62,49 @@ fn carriers(raw: &str) -> Vec<(bool, bool, u32)> {
             let band = name.rsplit("BAND").next()?.trim().parse().ok()?;
             Some((p[0].eq_ignore_ascii_case("PCC"), name.contains("NR"), band))
         })
-        .collect()
+        .collect();
+    if out.is_empty() && raw.contains("+GTCCINFO:") {
+        for r in crate::fm350::gtccinfo_rows(raw) {
+            if r[0] == "1" {
+                let is_nr = r[1] == "9";
+                let arfcn: u32 = r[6].parse().unwrap_or(0);
+                let band = if is_nr {
+                    r.get(8)
+                        .and_then(|s| s.strip_prefix("50"))
+                        .and_then(|s| s.parse().ok())
+                        .or_else(|| crate::fm350::preferred_nr_band(arfcn))
+                } else {
+                    r.get(8)
+                        .and_then(|s| s.parse::<u32>().ok())
+                        .map(|c| if c > 100 { c - 100 } else { c })
+                        .or_else(|| parser::lte_band(arfcn))
+                };
+                if let Some(b) = band {
+                    out.push((true, is_nr, b));
+                }
+            }
+        }
+    }
+    out
 }
 /// True when `AT+QENG="servingcell"` reports a registered state. A module that loses its
 /// usable bands may still camp somewhere in limited service (`LIMSRV`, emergency calls only),
 /// which is no connection.
 pub fn registered(raw: &str) -> bool {
-    raw.lines()
+    if raw
+        .lines()
         .filter_map(|line| line.trim().strip_prefix("+QENG:"))
         .map(parser::fields)
         .find(|p| p.first().is_some_and(|k| k == "servingcell"))
         .and_then(|p| p.get(1).cloned())
         .is_some_and(|state| state == "NOCONN" || state == "CONNECT")
+    {
+        return true;
+    }
+    raw.contains("+GTCCINFO:")
+        && crate::fm350::gtccinfo_rows(raw)
+            .iter()
+            .any(|r| r[0] == "1" && !r[2].trim().is_empty())
 }
 /// The frequency-lock check: registered with a primary carrier, and any NR carrier on one of
 /// the `locked` NR-ARFCNs. Under NSA a lock the cells do not match only drops the 5G leg, so
@@ -75,6 +123,18 @@ pub fn nr_frequency_ok(raw: &str, locked: &[u32]) -> bool {
             && let Ok(freq) = p[1].parse::<u32>()
         {
             nr.push(freq);
+        }
+    }
+    if !primary && raw.contains("+GTCCINFO:") {
+        for r in crate::fm350::gtccinfo_rows(raw) {
+            if r[0] == "1" {
+                primary = true;
+                if r[1] == "9"
+                    && let Ok(freq) = r[6].parse::<u32>()
+                {
+                    nr.push(freq);
+                }
+            }
         }
     }
     registered(raw) && primary && (nr.is_empty() || nr.iter().any(|f| locked.contains(f)))

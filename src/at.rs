@@ -179,6 +179,15 @@ impl At {
                                         Err(e) => last = e,
                                     }
                                 }
+                                if port.is_none()
+                                    && !devices.iter().any(|d| d.starts_with("/nonexistent"))
+                                    && let Some(discovered) = crate::fm350::discover_at_port()
+                                {
+                                    match Port::open(&discovered, Some(sms_notify.clone())) {
+                                        Ok(p) => port = Some(p),
+                                        Err(e) => last = e,
+                                    }
+                                }
                                 if port.is_none() {
                                     return Err(last);
                                 }
@@ -500,16 +509,32 @@ struct Port {
     #[cfg(unix)]
     _owner: Option<std::fs::File>,
     disconnected: bool,
+    fm350: bool,
 }
 impl Port {
     #[cfg(unix)]
     fn open(path: &str, sms_notify: Option<Arc<tokio::sync::Notify>>) -> Result<Self> {
         use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt};
-        let smd = std::path::Path::new(path)
+        if crate::fm350::classify_usb_tty(path) == Some(false) {
+            bail!("refusing to open non-AT interface on FM350-GL: {path}");
+        }
+        let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| std::path::PathBuf::from(path));
+        let smd = resolved
             .file_name()
             .is_some_and(|s| s.to_string_lossy().starts_with("smd"));
+        let usb_serial = resolved
+            .file_name()
+            .is_some_and(|s| {
+                let n = s.to_string_lossy();
+                n.starts_with("ttyUSB") || n.starts_with("ttyACM")
+            });
         // A transaction lock alone cannot prevent two persistent readers stealing replies.
-        let owner = if smd { Some(reader_lock()?) } else { None };
+        let owner = if smd || usb_serial {
+            Some(reader_lock()?)
+        } else {
+            None
+        };
+        let fm350 = crate::fm350::is_fm350_port(path);
         let mut options = std::fs::OpenOptions::new();
         options
             .read(true)
@@ -568,6 +593,7 @@ impl Port {
             tty,
             _owner: owner,
             disconnected: false,
+            fm350,
         })
     }
     #[cfg(not(unix))]
@@ -717,6 +743,35 @@ impl Port {
                 }
                 return self.execute(send, sms, timeout);
             }
+        }
+        if self.fm350 && sms.is_none() {
+            if let Some(res) = crate::fm350::run_translated(command, |sub| {
+                self.execute_raw(sub, None, timeout)
+            }) {
+                let mut out = res?;
+                if command.trim() == DASHBOARD {
+                    crate::fm350::ensure_data_session(&mut out, |sub| {
+                        self.execute_raw(sub, None, Some(Duration::from_secs(5)))
+                    });
+                }
+                return Ok(out);
+            }
+            if let Some(res) = crate::fm350::execute_action(command, |sub| {
+                self.execute_raw(sub, None, timeout)
+            }) {
+                return res;
+            }
+        }
+        self.execute_raw(command, sms, timeout)
+    }
+    fn execute_raw(
+        &mut self,
+        command: &str,
+        sms: Option<&str>,
+        timeout: Option<Duration>,
+    ) -> Result<String> {
+        if self.fm350 {
+            std::thread::sleep(Duration::from_millis(25));
         }
         self.drain(Duration::from_millis(150));
         self.write(format!("{command}\r\n").as_bytes())?;
