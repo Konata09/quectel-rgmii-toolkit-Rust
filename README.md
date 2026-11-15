@@ -76,10 +76,11 @@ FM350-GL 模块内部为精简 OpenWrt（约 `104 MB` 内存，只读固件分�
 
 ### 1. udev 与 `usb0` 固定命名
 
-创建 `/etc/udev/rules.d/99-fm350-gl.rules`（绑定 `0e8d:7127` 串口驱动、释放 ADB 接口 `05`、固定 `/dev/fm350-at` → 接口 `06`）：
+创建 `/etc/udev/rules.d/99-fm350-gl.rules`（在 `06` 串口出现时加载 `rndis_host` 与 `option`、防止 `option` 抢占 RNDIS `00/01` 接口并释放 ADB 接口 `05`、固定 `/dev/fm350-at` → 接口 `06`）：
 
 ```udev
-ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="0e8d", ATTR{idProduct}=="7127", RUN+="/usr/sbin/modprobe option", RUN+="/bin/sh -c 'echo 0e8d 7127 > /sys/bus/usb-serial/drivers/option1/new_id 2>/dev/null || true'"
+ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_interface", ATTR{bInterfaceNumber}=="06", ATTRS{idVendor}=="0e8d", ATTRS{idProduct}=="7127", RUN+="/usr/sbin/modprobe rndis_host", RUN+="/usr/sbin/modprobe option", RUN+="/bin/sh -c 'echo 0e8d 7127 > /sys/bus/usb-serial/drivers/option1/new_id 2>/dev/null || true'"
+ACTION=="add|bind", SUBSYSTEM=="usb", DRIVER=="option", ATTR{bInterfaceNumber}=="00|01", ATTRS{idVendor}=="0e8d", ATTRS{idProduct}=="7127", RUN+="/bin/sh -c 'b=$$(basename $$(dirname /sys%p)); echo \"$$b:1.0\" > /sys/bus/usb/drivers/option/unbind 2>/dev/null || true; echo \"$$b:1.1\" > /sys/bus/usb/drivers/option/unbind 2>/dev/null || true; /usr/sbin/modprobe rndis_host 2>/dev/null || true; echo \"$$b:1.0\" > /sys/bus/usb/drivers/rndis_host/bind 2>/dev/null || true'"
 ACTION=="add|bind", SUBSYSTEM=="usb", DRIVER=="option", ATTR{bInterfaceNumber}=="05", ATTRS{idVendor}=="0e8d", ATTRS{idProduct}=="7127", RUN+="/bin/sh -c 'echo %k > /sys/bus/usb/drivers/option/unbind 2>/dev/null || true'"
 ACTION=="add|change", SUBSYSTEM=="tty", KERNEL=="ttyUSB*", ENV{ID_VENDOR_ID}=="0e8d", ENV{ID_MODEL_ID}=="7127", ENV{ID_USB_INTERFACE_NUM}=="06", SYMLINK+="fm350-at"
 ```
@@ -152,6 +153,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/opt/simpleadmin
+Environment=HOME=/root
 ExecStart=/opt/simpleadmin/simpleadmin-httpd \
   --http :8080 --no-tls \
   --static /opt/simpleadmin/www \

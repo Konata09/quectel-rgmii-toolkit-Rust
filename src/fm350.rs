@@ -98,21 +98,46 @@ fn has_fm350_usb_device() -> bool {
     false
 }
 
+fn unbind_usb_interface_if_option(path: &Path, iface: &str) {
+    let is_option = std::fs::read_link(path.join("driver"))
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy() == "option"))
+        .unwrap_or(false);
+    if is_option {
+        let _ = std::fs::write("/sys/bus/usb/drivers/option/unbind", iface);
+    }
+}
+
 fn bind_option_driver() {
+    let _ = std::process::Command::new("modprobe")
+        .arg("rndis_host")
+        .status();
     let _ = std::process::Command::new("modprobe")
         .arg("option")
         .status();
     let _ = std::fs::write("/sys/bus/usb-serial/drivers/option1/new_id", "0e8d 7127\n");
-    // Unbind ADB interface (:1.5) from option so `adb` remains usable alongside `/dev/ttyUSB4`.
+    // Keep RNDIS (:1.0/:1.1) on rndis_host and ADB (:1.5) unbound from option.
     if let Ok(entries) = std::fs::read_dir("/sys/bus/usb/devices") {
+        let mut rndis_ctrls = Vec::new();
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if name.ends_with(":1.5") {
-                let v = std::fs::read_to_string(entry.path().join("../idVendor"))
-                    .unwrap_or_default();
-                if v.trim() == "0e8d" {
-                    let _ = std::fs::write("/sys/bus/usb/drivers/option/unbind", &name);
-                }
+            let Some((_, suffix)) = name.rsplit_once(':') else {
+                continue;
+            };
+            let v = std::fs::read_to_string(entry.path().join("../idVendor")).unwrap_or_default();
+            if v.trim() != "0e8d" {
+                continue;
+            }
+            if matches!(suffix, "1.0" | "1.1" | "1.5") {
+                unbind_usb_interface_if_option(&entry.path(), &name);
+            }
+            if suffix == "1.0" {
+                rndis_ctrls.push((entry.path(), name));
+            }
+        }
+        for (path, iface) in rndis_ctrls {
+            if !path.join("driver").exists() {
+                let _ = std::fs::write("/sys/bus/usb/drivers/rndis_host/bind", iface);
             }
         }
     }
@@ -351,6 +376,7 @@ pub fn sync_rndis_network(raw: &str, ipv4: &str) {
 fn ensure_adb_forward(port: u16) -> bool {
     static LAST_FWD_TRY: LazyLock<Mutex<std::collections::HashMap<u16, Instant>>> =
         LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+    static ADB_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     let should_fwd = {
         let mut last = LAST_FWD_TRY.lock().unwrap();
@@ -365,6 +391,7 @@ fn ensure_adb_forward(port: u16) -> bool {
     if !should_fwd {
         return false;
     }
+    let _guard = ADB_LOCK.lock().unwrap();
     let spec = format!("tcp:{port}");
     std::process::Command::new("adb")
         .args(["forward", &spec, &spec])
@@ -956,9 +983,6 @@ fn detect_default_apn(raw: &str) -> &'static str {
 pub fn start_gnss_backup() {
     static STARTED: std::sync::Once = std::sync::Once::new();
     STARTED.call_once(|| {
-        if rndis_interface().is_none() && !has_fm350_usb_device() {
-            return;
-        }
         let _ = std::thread::Builder::new()
             .name("fm350-nmea".into())
             .spawn(run_fm350_nmea_stream);
@@ -1036,6 +1060,10 @@ fn run_fm350_nmea_stream() {
     let mut last_rmc_utc = 0.0_f64;
 
     loop {
+        if rndis_interface().is_none() && !has_fm350_usb_device() {
+            std::thread::sleep(Duration::from_secs(5));
+            continue;
+        }
         let stream = match TcpStream::connect_timeout(&addr, Duration::from_millis(400)) {
             Ok(s) => s,
             Err(_) => {
@@ -1094,6 +1122,9 @@ fn run_fm350_nmea_stream() {
                     }
                 }
             }
+        }
+        if live_ticks == 0 {
+            let _ = ensure_adb_forward(19091);
         }
         std::thread::sleep(Duration::from_secs(3));
     }
