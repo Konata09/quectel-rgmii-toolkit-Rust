@@ -402,6 +402,7 @@ pub(crate) fn dialed(raw: &str) -> bool {
                 IpAddr::V6(ip) => !ip.is_unicast_link_local(),
             }
     };
+    let ims_cids = crate::fm350::ims_cids_from_raw(raw);
     parser::ok(raw)
         && (raw
             .lines()
@@ -419,6 +420,7 @@ pub(crate) fn dialed(raw: &str) -> bool {
                 .any(|line| {
                     let fields = parser::fields(line);
                     fields.len() >= 2
+                        && !ims_cids.contains(&fields[0])
                         && (fields[0] != "1" || !raw.contains("\"ims\""))
                         && fields[1..]
                             .iter()

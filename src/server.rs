@@ -781,7 +781,25 @@ async fn network(app: &Arc<App>, p: &Params) -> Result<Value> {
             let params = Params(p.0.clone());
             tokio::spawn(async move { lock.apply(&at, &params).await }).await?
         }
-        _ => run_action(app, &actions::network(p)?).await,
+        _ => {
+            let res = run_action(app, &actions::network(p)?).await?;
+            if res["ok"] == true
+                && matches!(
+                    action,
+                    "save_settings" | "reset_bands" | "sim_slot" | "pdp_save"
+                )
+                && !app.config.mock
+            {
+                let at = app.at.clone();
+                tokio::spawn(async move {
+                    for delay in [4, 6] {
+                        tokio::time::sleep(Duration::from_secs(delay)).await;
+                        let _ = at.fetch(crate::at::DASHBOARD, true).await;
+                    }
+                });
+            }
+            Ok(res)
+        }
     }
 }
 async fn settings(app: &Arc<App>, p: &Params) -> Result<Value> {

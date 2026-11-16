@@ -325,8 +325,8 @@
 <td data-no-i18n>{{ ctx.type }}</td>
 <td data-no-i18n>{{ ctx.apn || '-' }}</td>
 <td data-no-i18n class="sa-pdp-address"><span v-if="ctx.ipv4">{{ ctx.ipv4 }}</span><span v-if="ctx.ipv6">{{ ctx.ipv6 }}</span><span v-if="!ctx.ipv4 && !ctx.ipv6">-</span></td>
-<td><label class="sa-pdp-state" :class="{'is-on': ctx.active}"><input class="form-check-input ui-switch sa-pdp-toggle" type="checkbox" role="switch" :checked="ctx.active" :disabled="pdpBusy" :aria-label="'CID ' + ctx.cid" @click.prevent="togglePdp(ctx)"/><span v-text="ctx.active ? tr('已激活') : tr('未激活')"></span></label></td>
-<td class="sa-pdp-buttons"><button type="button" class="btn btn-outline-primary btn-sm sa-pdp-edit" :disabled="pdpBusy" @click="editPdp(ctx)">编辑</button><button type="button" class="btn btn-outline-danger btn-sm sa-pdp-delete" :disabled="pdpBusy" @click="deletePdp(ctx)">删除</button></td>
+<td><label class="sa-pdp-state" :class="{'is-on': ctx.active}"><input class="form-check-input ui-switch sa-pdp-toggle" type="checkbox" role="switch" :checked="ctx.active" :disabled="pdpBusy || ctx.cid < 1" :aria-label="'CID ' + ctx.cid" @click.prevent="togglePdp(ctx)"/><span v-text="ctx.active ? tr('已激活') : tr('未激活')"></span></label></td>
+<td class="sa-pdp-buttons"><button type="button" class="btn btn-outline-primary btn-sm sa-pdp-edit" :disabled="pdpBusy || ctx.cid < 1" @click="editPdp(ctx)">编辑</button><button type="button" class="btn btn-outline-danger btn-sm sa-pdp-delete" :disabled="pdpBusy || ctx.cid < 1" @click="deletePdp(ctx)">删除</button></td>
 </tr>
 </tbody>
 </table>

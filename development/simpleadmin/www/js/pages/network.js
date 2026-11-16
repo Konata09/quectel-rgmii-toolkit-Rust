@@ -634,14 +634,17 @@ function cellLocking() {
           this._currentSettingsFetchInFlight = SimpleAdmin.Api.networkData({ action: 'settings' })
             .then(settings => {
               this.apn = settings.apn || '-';
+              this.newApn = null;
               this.cellLockStatus = settings.cellLockStatus || '未知';
               this.lockRadios = settings.cell_lock?.radios || [];
               if (settings.cell_lock?.module) this.lockModule = settings.cell_lock.module;
               this.prefNetwork = settings.prefNetwork || '-';
+              this.prefNetworkMode = null;
               this.bands = settings.bands || '-';
               this.nrModeControlCurrent = settings.nrModeControlNum || null;
               this.nrModeControlNew = null;
               this.pdpType = settings.pdpType || '-';
+              this.newPdpType = null;
             })
             .finally(() => {
               this._currentSettingsFetchInFlight = null; // 清空请求标记

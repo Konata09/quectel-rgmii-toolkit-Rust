@@ -751,7 +751,12 @@ impl Port {
                 let mut out = res?;
                 if command.trim() == DASHBOARD {
                     crate::fm350::ensure_data_session(&mut out, |sub| {
-                        self.execute_raw(sub, None, Some(Duration::from_secs(5)))
+                        let wait = if sub.trim().eq_ignore_ascii_case("AT+CGACT=1,2") {
+                            Duration::from_secs(15)
+                        } else {
+                            Duration::from_secs(5)
+                        };
+                        self.execute_raw(sub, None, Some(wait))
                     });
                 }
                 return Ok(out);

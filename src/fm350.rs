@@ -258,6 +258,12 @@ fn run_status_quiet(program: &str, args: &[&str]) {
         .status();
 }
 
+static LAST_RNDIS_SYNC: LazyLock<Mutex<String>> = LazyLock::new(|| Mutex::new(String::new()));
+
+fn invalidate_rndis_cache() {
+    *LAST_RNDIS_SYNC.lock().unwrap() = String::new();
+}
+
 /// Syncs host RNDIS interface IPv4/IPv6 addresses, neighbor entry, default routes, and DNS.
 pub fn sync_rndis_network(raw: &str, ipv4: &str) {
     let Ok(addr) = ipv4.trim().parse::<std::net::Ipv4Addr>() else {
@@ -269,14 +275,13 @@ pub fn sync_rndis_network(raw: &str, ipv4: &str) {
     let Some(iface) = rndis_interface() else {
         return;
     };
-    static LAST_SYNCED: LazyLock<Mutex<String>> = LazyLock::new(|| Mutex::new(String::new()));
 
     let current_v4 = run_quiet("ip", &["-4", "-o", "addr", "show", "dev", &iface]);
     let cidr = format!("{addr}/24");
     let has_single_cidr =
         current_v4.lines().filter(|l| l.contains(" inet ")).count() == 1 && current_v4.contains(&cidr);
     let v4_route = run_quiet("ip", &["-4", "route", "show", "default", "dev", &iface]);
-    let v4_ok = has_single_cidr && v4_route.contains("metric 101") && *LAST_SYNCED.lock().unwrap() == cidr;
+    let v4_ok = has_single_cidr && v4_route.contains("metric 101") && *LAST_RNDIS_SYNC.lock().unwrap() == cidr;
 
     if !v4_ok {
         let octets = addr.octets();
@@ -285,12 +290,14 @@ pub fn sync_rndis_network(raw: &str, ipv4: &str) {
         run_status_quiet("ip", &["link", "set", &iface, "up"]);
         run_status_quiet("ip", &["-4", "route", "del", "default", "dev", &iface]);
         run_status_quiet("ip", &["-4", "addr", "flush", "dev", &iface]);
+        // Drop any stale global IPv6 prefix from an earlier PDN/RAT attach before triggering SLAAC.
+        run_status_quiet("ip", &["-6", "addr", "flush", "dev", &iface, "scope", "global"]);
         run_status_quiet("ip", &["addr", "add", &cidr, "dev", &iface]);
         run_status_quiet(
             "ip",
             &["route", "replace", "default", "via", &gw4, "dev", &iface, "metric", "101"],
         );
-        *LAST_SYNCED.lock().unwrap() = cidr.clone();
+        *LAST_RNDIS_SYNC.lock().unwrap() = cidr.clone();
     }
 
     // Ensure IPv6 SLAAC + permanent L3 M-RNDIS gateway neighbor & metric-101 route
@@ -303,16 +310,25 @@ pub fn sync_rndis_network(raw: &str, ipv4: &str) {
     let v6_addr = run_quiet("ip", &["-6", "-o", "addr", "show", "dev", &iface, "scope", "global"]);
     let v6_route = run_quiet("ip", &["-6", "route", "show", "default", "dev", &iface]);
     let v6_neigh = run_quiet("ip", &["-6", "neigh", "show", "dev", &iface]);
-    let v6_ok = !v6_addr.trim().is_empty()
+    let v6_ok = v4_ok
+        && !v6_addr.trim().is_empty()
         && v6_route.contains("default via fe80::1")
         && v6_route.contains("metric 101")
         && v6_neigh.contains("fe80::1")
         && v6_neigh.contains("PERMANENT");
 
     if !v6_ok {
-        if v6_addr.trim().is_empty() {
+        if !v4_ok || v6_addr.trim().is_empty() {
             send_ipv6_rs(&iface);
-            std::thread::sleep(Duration::from_millis(250));
+            for _ in 0..6 {
+                std::thread::sleep(Duration::from_millis(120));
+                if !run_quiet("ip", &["-6", "-o", "addr", "show", "dev", &iface, "scope", "global"])
+                    .trim()
+                    .is_empty()
+                {
+                    break;
+                }
+            }
         }
         run_status_quiet(
             "ip",
@@ -352,7 +368,7 @@ pub fn sync_rndis_network(raw: &str, ipv4: &str) {
         for line in parser::lines(raw) {
             if let Some(tail) = line.strip_prefix("+CGCONTRDP:") {
                 let p = parser::fields(tail);
-                if p.len() >= 6 && !p[2].eq_ignore_ascii_case("ims") {
+                if p.len() >= 6 && !is_ims_apn(&p[2]) {
                     for token in p.iter().skip(5).take(2) {
                         if let Some(ip) = super::parser::parse_pdp_ip(token)
                             && !dns.contains(&ip.to_string())
@@ -675,22 +691,14 @@ where
         return Some(run(&format!("AT+CAVIMS={v}")));
     }
 
-    // 6. PDP activate: AT+CGACT=1,<cid> -> activate, bind M-RNDIS, and sync host IPv4/IPv6
+    // 6. PDP activate: AT+CGACT=1,<cid> -> activate, bind M-RNDIS (data CID >= 2), and sync host IPv4/IPv6
     if let Some(cid_str) = up.strip_prefix("AT+CGACT=1,")
         && let Ok(cid) = cid_str.trim().parse::<u32>()
     {
         return Some((|| {
             let out = run(&format!("AT+CGACT=1,{cid}"))?;
-            let _ = run(&format!("AT+EMBIND=1,\"M-RNDIS\",{cid}"));
-            if let Ok(addr_raw) = run(&format!("AT+CGPADDR={cid}")) {
-                for line in parser::lines(&addr_raw) {
-                    if let Some(tail) = line.strip_prefix("+CGPADDR:") {
-                        let f = parser::fields(tail);
-                        if let Some(ip) = f.get(1) {
-                            sync_rndis_network(&addr_raw, ip);
-                        }
-                    }
-                }
+            if parser::ok(&out) && cid >= 2 {
+                bind_and_sync_cid(&mut run, cid);
             }
             Ok(out)
         })());
@@ -699,7 +707,7 @@ where
     // 8. Band lock / network mode settings (`+QNWPREFCFG=...`)
     if up.contains("+QNWPREFCFG=") {
         return Some((|| {
-            let mut cgdcont_cmds = Vec::new();
+            let mut cgdcont_cmds: Vec<(u32, String)> = Vec::new();
             let mut mode_pref: Option<String> = None;
             let mut nr_disable: Option<u32> = None;
             let mut lte_bands: Option<Vec<u32>> = None;
@@ -708,12 +716,21 @@ where
             for part in crate::at::split(trimmed) {
                 let pup = part.to_ascii_uppercase();
                 if pup.starts_with("AT+CGDCONT=") {
-                    cgdcont_cmds.push(part.clone());
-                    // Mirror CID 1 APN change onto CID 2 so data session uses the user's APN even if CID 1 is IMS.
-                    if let Some(rest) = part.strip_prefix("AT+CGDCONT=1,") {
-                        cgdcont_cmds.push(format!("AT+CGDCONT=2,{rest}"));
+                    // On FM350-GL, CID 1 holds IMS while CID 2 carries M-RNDIS data; target CID 2 directly.
+                    if let Some(rest) = part
+                        .strip_prefix("AT+CGDCONT=1,")
+                        .or_else(|| pup.strip_prefix("AT+CGDCONT=1,").map(|r| &part[part.len() - r.len()..]))
+                    {
+                        cgdcont_cmds.push((2, format!("AT+CGDCONT=2,{rest}")));
+                    } else {
+                        let cid = part
+                            .get("AT+CGDCONT=".len()..)
+                            .and_then(|s| s.split(',').next())
+                            .and_then(|s| s.trim().parse::<u32>().ok())
+                            .unwrap_or(2);
+                        cgdcont_cmds.push((cid, part.clone()));
                     }
-                } else if let Some( idx ) = pup.find("+QNWPREFCFG=") {
+                } else if let Some(idx) = pup.find("+QNWPREFCFG=") {
                     let tail = &part[idx + "+QNWPREFCFG=".len()..];
                     let f = parser::fields(tail);
                     if f.len() >= 2 {
@@ -741,8 +758,21 @@ where
             }
 
             let mut last_out = "\r\nOK\r\n".to_string();
-            for cmd in cgdcont_cmds {
+            let will_reattach = mode_pref.is_some() || nr_disable.is_some();
+            for (cid, cmd) in cgdcont_cmds {
                 last_out = run(&cmd)?;
+                if !parser::ok(&last_out) {
+                    let _ = run(&format!("AT+CGACT=0,{cid}"));
+                    last_out = run(&cmd)?;
+                }
+                if parser::ok(&last_out) && cid >= 2 && !will_reattach {
+                    let _ = run(&format!("AT+CGACT=0,{cid}"));
+                    if let Ok(act) = run(&format!("AT+CGACT=1,{cid}"))
+                        && parser::ok(&act)
+                    {
+                        bind_and_sync_cid(&mut run, cid);
+                    }
+                }
             }
 
             if let Some(dis) = nr_disable {
@@ -756,7 +786,20 @@ where
 
             if mode_pref.is_some() || lte_bands.is_some() || nr_bands.is_some() {
                 let current = run("AT+GTACT?").unwrap_or_default();
-                let gtact_cmd = build_gtact_command(&current, mode_pref.as_deref(), nr_disable, lte_bands.as_deref(), nr_bands.as_deref());
+                let caps = if lte_bands.is_none() && nr_bands.is_none() {
+                    // Fill missing target band families when switching out of a single-RAT mode.
+                    run("AT+GTACT=?").unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                let gtact_cmd = build_gtact_command_with_caps(
+                    &current,
+                    &caps,
+                    mode_pref.as_deref(),
+                    nr_disable,
+                    lte_bands.as_deref(),
+                    nr_bands.as_deref(),
+                );
                 last_out = run(&gtact_cmd)?;
             }
             Ok(last_out)
@@ -766,8 +809,55 @@ where
     None
 }
 
-fn build_gtact_command(
+fn bind_and_sync_cid<F>(run: &mut F, cid: u32)
+where
+    F: FnMut(&str) -> Result<String>,
+{
+    let _ = run(&format!("AT+EMBIND=1,\"M-RNDIS\",{cid}"));
+    invalidate_rndis_cache();
+    if let Ok(addr_raw) = run(&format!("AT+CGCONTRDP={cid};+CGPADDR={cid}")) {
+        let ims_cids = ims_cids_from_raw(&addr_raw);
+        if let (Some(v4), _) = extract_data_ipv4_ipv6(&addr_raw, &ims_cids) {
+            sync_rndis_network(&addr_raw, &v4);
+        }
+    }
+}
+
+fn parse_gtact_caps(caps_raw: &str) -> (Vec<String>, Vec<String>, Vec<String>) {
+    for line in parser::lines(caps_raw) {
+        if let Some(tail) = line.strip_prefix("+GTACT:")
+            && tail.contains('(')
+        {
+            let groups: Vec<&str> = tail
+                .split('(')
+                .skip(1)
+                .filter_map(|s| s.split(')').next())
+                .collect();
+            let parse_group = |idx: usize, min: u32, max: u32| -> Vec<String> {
+                groups
+                    .get(idx)
+                    .map(|g| {
+                        g.split(',')
+                            .map(str::trim)
+                            .filter(|s| s.parse::<u32>().is_ok_and(|n| (min..=max).contains(&n)))
+                            .map(String::from)
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+            return (
+                parse_group(4, 1, 10),
+                parse_group(5, 101, 199),
+                parse_group(8, 501, 9999),
+            );
+        }
+    }
+    (Vec::new(), Vec::new(), Vec::new())
+}
+
+fn build_gtact_command_with_caps(
     current_raw: &str,
+    caps_raw: &str,
     mode_pref: Option<&str>,
     nr_disable: Option<u32>,
     new_lte: Option<&[u32]>,
@@ -781,7 +871,9 @@ fn build_gtact_command(
     let mut nr: Vec<String> = Vec::new();
 
     for line in parser::lines(current_raw) {
-        if let Some(tail) = line.strip_prefix("+GTACT:") {
+        if let Some(tail) = line.strip_prefix("+GTACT:")
+            && !tail.contains('(')
+        {
             let p = parser::fields(tail);
             if p.len() >= 3 {
                 rat = p[0].parse().unwrap_or(20);
@@ -845,6 +937,19 @@ fn build_gtact_command(
         }
     }
 
+    if !caps_raw.is_empty() {
+        let (cap_umts, cap_lte, cap_nr) = parse_gtact_caps(caps_raw);
+        if umts.is_empty() {
+            umts = cap_umts;
+        }
+        if lte.is_empty() {
+            lte = cap_lte;
+        }
+        if nr.is_empty() {
+            nr = cap_nr;
+        }
+    }
+
     if let Some(l) = new_lte {
         lte = l.iter().map(|b| (100 + b).to_string()).collect();
     }
@@ -869,13 +974,38 @@ fn build_gtact_command(
     format!("AT+GTACT={}", args.join(","))
 }
 
-/// Ensures an active data PDP context and `M-RNDIS` binding exist when the FM350-GL is registered.
-pub fn ensure_data_session<F>(dashboard_raw: &mut String, mut run: F)
+fn extract_embind_rndis_cid(raw: &str) -> Option<u32> {
+    for line in parser::lines(raw) {
+        if let Some(tail) = line.strip_prefix("+EMBIND:") {
+            let p = parser::fields(tail);
+            if p.len() >= 3
+                && p[0] == "1"
+                && p[1].eq_ignore_ascii_case("M-RNDIS")
+                && let Ok(cid) = p[2].parse::<u32>()
+            {
+                return Some(cid);
+            }
+        }
+    }
+    None
+}
+
+/// Ensures an active data PDP context (>= 2) and `M-RNDIS` binding exist when the FM350-GL is registered.
+pub fn ensure_data_session<F>(dashboard_raw: &mut String, run: F)
 where
     F: FnMut(&str) -> Result<String>,
 {
     static LAST_ATTEMPT: LazyLock<Mutex<Option<Instant>>> = LazyLock::new(|| Mutex::new(None));
+    ensure_data_session_with_throttle(dashboard_raw, &LAST_ATTEMPT, run);
+}
 
+fn ensure_data_session_with_throttle<F>(
+    dashboard_raw: &mut String,
+    last_attempt: &Mutex<Option<Instant>>,
+    mut run: F,
+) where
+    F: FnMut(&str) -> Result<String>,
+{
     if !dashboard_raw.contains("+CPIN: READY") {
         return;
     }
@@ -896,69 +1026,112 @@ where
         return;
     }
 
-    // Check if we already have an active non-IMS data context with an IPv4 address.
-    let ims_cids: Vec<String> = parser::lines(dashboard_raw)
-        .filter_map(|l| l.strip_prefix("+CGCONTRDP:"))
-        .map(parser::fields)
-        .filter(|p| p.len() >= 3 && p[2].eq_ignore_ascii_case("ims"))
-        .map(|p| p[0].clone())
-        .collect();
-    let mut data_ipv4: Option<String> = None;
+    let ims_cids = ims_cids_from_raw(dashboard_raw);
+    let bound_rndis_cid = extract_embind_rndis_cid(dashboard_raw);
+
+    // Only CIDs >= 2 (non-IMS) can be bound via AT+EMBIND (`+EMBIND` rejects CID 0 and CID 1 is IMS).
+    let mut active_bindable: Option<(u32, String)> = None;
     for line in parser::lines(dashboard_raw) {
         if let Some(tail) = line.strip_prefix("+CGPADDR:") {
             let p = parser::fields(tail);
             if p.len() >= 2
                 && !ims_cids.contains(&p[0])
-                && p[0] != "1"
+                && let Ok(cid) = p[0].parse::<u32>()
+                && cid >= 2
                 && p[1].split('.').count() == 4
                 && p[1] != "0.0.0.0"
             {
-                data_ipv4 = Some(p[1].clone());
+                active_bindable = Some((cid, p[1].clone()));
+                if bound_rndis_cid == Some(cid) {
+                    break;
+                }
             }
         } else if let Some(tail) = line.strip_prefix("+CGCONTRDP:") {
             let p = parser::fields(tail);
             if p.len() > 3
-                && !p[2].eq_ignore_ascii_case("ims")
+                && !is_ims_apn(&p[2])
+                && let Ok(cid) = p[0].parse::<u32>()
+                && cid >= 2
                 && p[3].split('.').count() == 4
                 && p[3] != "0.0.0.0"
+                && active_bindable.is_none()
             {
-                data_ipv4 = Some(p[3].clone());
+                active_bindable = Some((cid, p[3].clone()));
             }
         }
     }
 
-    if let Some(ip) = data_ipv4 {
-        sync_rndis_network(dashboard_raw, &ip);
+    if let Some((cid, ip)) = active_bindable {
+        if bound_rndis_cid == Some(cid) {
+            sync_rndis_network(dashboard_raw, &ip);
+            return;
+        }
+        {
+            let mut last = last_attempt.lock().unwrap();
+            if last.is_some_and(|t| t.elapsed() < Duration::from_secs(10)) {
+                return;
+            }
+            *last = Some(Instant::now());
+        }
+        if run(&format!("AT+EMBIND=1,\"M-RNDIS\",{cid}")).is_ok_and(|r| parser::ok(&r)) {
+            invalidate_rndis_cache();
+            sync_rndis_network(dashboard_raw, &ip);
+        }
         return;
     }
 
-    // Throttle auto-dial attempts to once every 15 seconds.
+    // Throttle auto-dial attempts to once every 10 seconds.
     {
-        let mut last = LAST_ATTEMPT.lock().unwrap();
-        if last.is_some_and(|t| t.elapsed() < Duration::from_secs(15)) {
+        let mut last = last_attempt.lock().unwrap();
+        if last.is_some_and(|t| t.elapsed() < Duration::from_secs(10)) {
             return;
         }
         *last = Some(Instant::now());
     }
 
-    // Determine carrier APN from +COPS or +GTCCINFO
-    let apn = detect_default_apn(dashboard_raw);
-    let _ = run(&format!("AT+CGDCONT=2,\"IPV4V6\",\"{apn}\""));
-    if run("AT+CGACT=1,2").is_ok() {
-        let already_bound = dashboard_raw.lines().any(|l| {
-            let t = l.trim();
-            t.starts_with("+EMBIND:") && t.contains("\"M-RNDIS\"") && t.ends_with(",2")
-        });
-        if !already_bound {
+    // Preserve any existing CID 2 definition; otherwise populate from CID 0 or PLMN default.
+    let cgdcont_raw = run("AT+CGDCONT?").unwrap_or_default();
+    let mut cid2_defined = false;
+    let mut cid0_apn: Option<String> = None;
+    for line in parser::lines(&cgdcont_raw) {
+        if let Some(tail) = line.strip_prefix("+CGDCONT:") {
+            let p = parser::fields(tail);
+            if p.len() >= 3 {
+                let apn = p[2].trim();
+                if p[0] == "2" && ["IP", "IPV6", "IPV4V6"].contains(&p[1].as_str()) && !is_ims_apn(apn) {
+                    cid2_defined = true;
+                } else if p[0] == "0" && !apn.is_empty() && !is_ims_apn(apn) {
+                    cid0_apn = Some(strip_3gpp_apn_suffix(apn).to_string());
+                }
+            }
+        }
+    }
+    let fallback_apn = cid0_apn.unwrap_or_else(|| detect_default_apn(dashboard_raw).to_string());
+    if !cid2_defined {
+        let _ = run(&format!("AT+CGDCONT=2,\"IPV4V6\",\"{fallback_apn}\""));
+    }
+
+    let mut activated = run("AT+CGACT=1,2").is_ok_and(|r| parser::ok(&r));
+    if !activated && cid2_defined {
+        // Fallback if CID 2 was defined with an empty/rejected APN.
+        let _ = run(&format!("AT+CGDCONT=2,\"IPV4V6\",\"{fallback_apn}\""));
+        activated = run("AT+CGACT=1,2").is_ok_and(|r| parser::ok(&r));
+    }
+
+    if activated {
+        if bound_rndis_cid != Some(2) {
             let _ = run("AT+EMBIND=1,\"M-RNDIS\",2");
         }
+        invalidate_rndis_cache();
         if let Ok(extra) = run("AT+CGCONTRDP=2;+CGPADDR=2") {
             dashboard_raw.push('\n');
             dashboard_raw.push_str(&extra);
             for line in parser::lines(&extra) {
                 if let Some(tail) = line.strip_prefix("+CGPADDR:") {
                     let p = parser::fields(tail);
-                    if let Some(ip) = p.get(1) {
+                    if p.first().is_some_and(|c| c == "2")
+                        && let Some(ip) = p.get(1)
+                    {
                         sync_rndis_network(dashboard_raw, ip);
                     }
                 }
@@ -1139,6 +1312,120 @@ fn read_fm350_gnss_nmea() -> String {
     "OK\r\n".into()
 }
 
+/// Strips the 3GPP PLMN operator suffix (`.MNCxxx.MCCxxx.GPRS`) from dynamic `+CGCONTRDP` APNs.
+pub fn strip_3gpp_apn_suffix(apn: &str) -> &str {
+    let apn = apn.trim();
+    let Some((rest, last)) = apn.rsplit_once('.') else {
+        return apn;
+    };
+    if !last.eq_ignore_ascii_case("gprs") {
+        return apn;
+    }
+    let Some((rest, mcc)) = rest.rsplit_once('.') else {
+        return apn;
+    };
+    let Some(mcc_digits) = mcc
+        .get(..3)
+        .filter(|p| p.eq_ignore_ascii_case("mcc"))
+        .and_then(|_| mcc.get(3..))
+    else {
+        return apn;
+    };
+    if mcc_digits.is_empty() || !mcc_digits.bytes().all(|b| b.is_ascii_digit()) {
+        return apn;
+    }
+    let Some((base, mnc)) = rest.rsplit_once('.') else {
+        return apn;
+    };
+    let Some(mnc_digits) = mnc
+        .get(..3)
+        .filter(|p| p.eq_ignore_ascii_case("mnc"))
+        .and_then(|_| mnc.get(3..))
+    else {
+        return apn;
+    };
+    if base.is_empty() || mnc_digits.is_empty() || !mnc_digits.bytes().all(|b| b.is_ascii_digit()) {
+        return apn;
+    }
+    base
+}
+
+/// Returns true when an APN refers to the IMS bearer (e.g. `ims` or `ims.MNC001.MCC460.GPRS`).
+pub fn is_ims_apn(apn: &str) -> bool {
+    strip_3gpp_apn_suffix(apn).eq_ignore_ascii_case("ims")
+}
+
+/// Collects CIDs whose `+CGDCONT` or `+CGCONTRDP` APN is an IMS APN.
+pub(crate) fn ims_cids_from_raw(raw: &str) -> Vec<String> {
+    let mut cids = Vec::new();
+    for line in parser::lines(raw) {
+        let Some((key, tail)) = line.split_once(':') else {
+            continue;
+        };
+        if matches!(key.trim(), "+CGDCONT" | "+CGCONTRDP") {
+            let p = parser::fields(tail);
+            if p.len() >= 3
+                && is_ims_apn(&p[2])
+                && !p[0].is_empty()
+                && !cids.contains(&p[0])
+            {
+                cids.push(p[0].clone());
+            }
+        }
+    }
+    cids
+}
+
+fn cid_priority(cid: &str) -> u8 {
+    match cid.parse::<u32>() {
+        Ok(2) => 3,
+        Ok(n) if n > 2 => 2,
+        Ok(0) => 1,
+        _ => 0,
+    }
+}
+
+fn extract_data_ipv4_ipv6(raw: &str, ims_cids: &[String]) -> (Option<String>, Option<String>) {
+    let mut best_v4: Option<(u8, String)> = None;
+    let mut best_v6: Option<(u8, String)> = None;
+    let mut update = |cid: &str, addr_str: &str| {
+        if let Some(ip) = super::parser::parse_pdp_ip(addr_str) {
+            let prio = if ims_cids.contains(&cid.to_string()) || cid == "1" {
+                0
+            } else {
+                cid_priority(cid).max(1)
+            };
+            match ip {
+                std::net::IpAddr::V4(v4) if best_v4.as_ref().is_none_or(|(p, _)| prio > *p) => {
+                    best_v4 = Some((prio, v4.to_string()));
+                }
+                std::net::IpAddr::V6(v6) if best_v6.as_ref().is_none_or(|(p, _)| prio > *p) => {
+                    best_v6 = Some((prio, v6.to_string()));
+                }
+                _ => {}
+            }
+        }
+    };
+    for line in parser::lines(raw) {
+        if let Some(tail) = line.strip_prefix("+CGPADDR:") {
+            let p = parser::fields(tail);
+            if p.len() >= 2 {
+                for addr in &p[1..] {
+                    update(&p[0], addr);
+                }
+            }
+        } else if let Some(tail) = line.strip_prefix("+CGCONTRDP:") {
+            let p = parser::fields(tail);
+            if p.len() > 3 && !is_ims_apn(&p[2]) {
+                for addr in p.iter().skip(3).take(2) {
+                    update(&p[0], addr);
+                }
+            }
+        }
+    }
+    (best_v4.map(|(_, s)| s), best_v6.map(|(_, s)| s))
+}
+
 pub fn apn_for_plmn(plmn: &str) -> &'static str {
     match plmn.trim() {
         "46000" | "46002" | "46004" | "46007" | "46008" => "cmnet",
@@ -1293,6 +1580,8 @@ pub fn has_fm350_markers(raw: &str) -> bool {
 /// Augments `parser::dashboard` output when Fibocom FM350-GL responses are present.
 pub fn augment_dashboard(d: &mut Value, raw: &str, temp_sum: &mut i64, temp_count: &mut i64, sim: &mut Option<bool>) {
     let mut cesq: Option<Vec<i64>> = None;
+    let ims_cids = ims_cids_from_raw(raw);
+    let mut best_apn: Option<(u8, String)> = None;
     for line in parser::lines(raw) {
         let up = line.to_ascii_uppercase();
         if up.starts_with("+CPIN: READY") {
@@ -1343,32 +1632,38 @@ pub fn augment_dashboard(d: &mut Value, raw: &str, temp_sum: &mut i64, temp_coun
             "+CESQ" if p.len() >= 9 => {
                 cesq = Some(p.iter().map(|x| x.parse::<i64>().unwrap_or(255)).collect());
             }
-            "+CGPADDR" if p.len() >= 2 => {
-                // Prefer non-IMS CID (>=2) or fallback to CID 1
-                let is_ims_cid = p[0] == "1" && raw.contains("\"ims\"");
-                for addr in &p[1..] {
-                    if let Some(ip) = super::parser::parse_pdp_ip(addr) {
-                        match ip {
-                            std::net::IpAddr::V4(v4) if !is_ims_cid || parser::text(d, "ipv4") == "-" => {
-                                d["ipv4"] = json!(v4.to_string());
-                                d["sim"] = json!("已激活");
-                            }
-                            std::net::IpAddr::V6(v6) if !is_ims_cid || parser::text(d, "ipv6") == "-" => {
-                                d["ipv6"] = json!(v6.to_string());
-                                d["sim"] = json!("已激活");
-                            }
-                            _ => {}
-                        }
+            "+CGCONTRDP" if p.len() >= 3 => {
+                let clean = strip_3gpp_apn_suffix(&p[2]);
+                if !clean.is_empty() && !is_ims_apn(clean) {
+                    let prio = cid_priority(&p[0]).max(1);
+                    if best_apn.as_ref().is_none_or(|(p, _)| prio >= *p) {
+                        best_apn = Some((prio, clean.to_string()));
                     }
                 }
             }
-            "+CGCONTRDP" if p.len() >= 3 => {
-                let apn = p[2].trim();
-                if !apn.is_empty() && (!apn.eq_ignore_ascii_case("ims") || parser::text(d, "apn") == "-") {
-                    d["apn"] = json!(apn);
-                }
-            }
             _ => {}
+        }
+    }
+    if has_fm350_markers(raw) || !ims_cids.is_empty() || raw.contains("+CGPADDR:") {
+        let (v4, v6) = extract_data_ipv4_ipv6(raw, &ims_cids);
+        if let Some(ip) = v4 {
+            d["ipv4"] = json!(ip);
+            d["sim"] = json!("已激活");
+        }
+        if let Some(ip) = v6 {
+            d["ipv6"] = json!(ip);
+            d["sim"] = json!("已激活");
+        }
+        if let Some((_, apn)) = best_apn {
+            d["apn"] = json!(apn);
+        } else if is_ims_apn(parser::text(d, "apn")) {
+            d["apn"] = json!("-");
+        } else if parser::text(d, "apn") != "-" {
+            let cur = parser::text(d, "apn").to_owned();
+            let cleaned = strip_3gpp_apn_suffix(&cur);
+            if cleaned != cur {
+                d["apn"] = json!(cleaned);
+            }
         }
     }
 
@@ -1570,6 +1865,7 @@ pub fn augment_device(d: &mut Value, raw: &str) {
     if parser::text(d, "manufacturer").contains("Fibocom") && parser::text(d, "modelName") == "-" {
         d["modelName"] = json!("FM350-GL");
     }
+    let ims_cids = ims_cids_from_raw(raw);
     for line in parser::lines(raw) {
         let Some((key, tail)) = line.split_once(':') else {
             continue;
@@ -1585,28 +1881,15 @@ pub fn augment_device(d: &mut Value, raw: &str) {
             "+CCID" if !tail.trim().is_empty() && parser::text(d, "iccid") == "-" => {
                 d["iccid"] = json!(tail.trim());
             }
-            "+CGPADDR" if p.len() >= 2 => {
-                let is_ims_cid = p[0] == "1" && raw.contains("\"ims\"");
-                for addr in &p[1..] {
-                    if let Some(ip) = super::parser::parse_pdp_ip(addr) {
-                        match ip {
-                            std::net::IpAddr::V4(v4)
-                                if !is_ims_cid || parser::text(d, "wwanIpv4") == "-" =>
-                            {
-                                d["wwanIpv4"] = json!(v4.to_string());
-                            }
-                            std::net::IpAddr::V6(v6)
-                                if !is_ims_cid || parser::text(d, "wwanIpv6") == "-" =>
-                            {
-                                d["wwanIpv6"] = json!(v6.to_string());
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
             _ => {}
         }
+    }
+    let (v4, v6) = extract_data_ipv4_ipv6(raw, &ims_cids);
+    if let Some(ip) = v4 {
+        d["wwanIpv4"] = json!(ip);
+    }
+    if let Some(ip) = v6 {
+        d["wwanIpv6"] = json!(ip);
     }
 }
 
@@ -1647,6 +1930,8 @@ pub fn augment_bands(out: &mut Value, raw: &str) {
 }
 
 pub fn augment_network(out: &mut Value, raw: &str) {
+    let mut contr_apns: Vec<(String, String)> = Vec::new();
+    let mut dcont_entries: Vec<(String, String, String)> = Vec::new();
     for line in parser::lines(raw) {
         let Some((key, tail)) = line.split_once(':') else {
             continue;
@@ -1690,11 +1975,48 @@ pub fn augment_network(out: &mut Value, raw: &str) {
                     });
                 }
             }
-            "+CGDCONT" if p.len() >= 3 && !p[2].eq_ignore_ascii_case("ims") => {
-                out["pdpType"] = json!(p[1]);
-                out["apn"] = json!(p[2]);
+            "+CGCONTRDP" if p.len() >= 3 => {
+                let clean = strip_3gpp_apn_suffix(&p[2]);
+                if !clean.is_empty() && !is_ims_apn(clean) {
+                    contr_apns.push((p[0].clone(), clean.to_string()));
+                }
+            }
+            "+CGDCONT" if p.len() >= 3 && !is_ims_apn(&p[2]) => {
+                dcont_entries.push((p[0].clone(), p[1].clone(), p[2].trim().to_string()));
             }
             _ => {}
+        }
+    }
+    if has_fm350_markers(raw) {
+        let best_contr = contr_apns
+            .iter()
+            .max_by_key(|(cid, _)| cid_priority(cid))
+            .cloned();
+        let best_dcont = dcont_entries
+            .iter()
+            .max_by_key(|(cid, _, apn)| {
+                let active_bonus = u8::from(contr_apns.iter().any(|(c, _)| c == cid)) * 10;
+                let nonempty_bonus = u8::from(!apn.is_empty()) * 4;
+                active_bonus + nonempty_bonus + cid_priority(cid)
+            })
+            .cloned();
+        if let Some((cid, pdp_type, apn)) = best_dcont {
+            out["pdpType"] = json!(pdp_type);
+            let display_apn = if !apn.is_empty() {
+                strip_3gpp_apn_suffix(&apn).to_string()
+            } else {
+                contr_apns
+                    .iter()
+                    .find(|(c, _)| c == &cid)
+                    .or(best_contr.as_ref())
+                    .map(|(_, a)| a.clone())
+                    .unwrap_or_default()
+            };
+            out["apn"] = json!(if display_apn.is_empty() { "-" } else { &display_apn });
+        } else if let Some((_, apn)) = best_contr {
+            out["apn"] = json!(apn);
+        } else if is_ims_apn(parser::text(out, "apn")) {
+            out["apn"] = json!("-");
         }
     }
     let cells = gtccinfo_rows(raw);
@@ -1764,7 +2086,7 @@ pub fn augment_pdp(out: &mut Value, raw: &str) {
             }
             "+CGCONTRDP" if p.len() >= 3 => {
                 let cid = parser::number(&p[0]);
-                let apn = p[2].trim();
+                let apn = strip_3gpp_apn_suffix(&p[2]);
                 if !apn.is_empty() {
                     contr_apns.entry(cid).or_insert_with(|| apn.to_string());
                 }
@@ -2172,7 +2494,7 @@ OK\r\n";
         assert_eq!(b["locked_lte_bands"], "1:3:5:8:41");
         assert_eq!(b["locked_sa_bands"], "1:28:41:78:79");
 
-        let cmd = build_gtact_command(raw, None, None, Some(&[1, 3, 8]), Some(&[1, 78]));
+        let cmd = build_gtact_command_with_caps(raw, "", None, None, Some(&[1, 3, 8]), Some(&[1, 78]));
         assert_eq!(
             cmd,
             "AT+GTACT=20,6,3,1,2,4,5,8,101,103,108,501,5078"
@@ -2284,5 +2606,146 @@ OK\r\n";
         assert_eq!(i64::from_ne_bytes(pkt[0..8].try_into().unwrap()), 1_794_761_466);
         assert_eq!(i64::from_ne_bytes(pkt[8..16].try_into().unwrap()), 228_000);
         assert!((f64::from_ne_bytes(pkt[16..24].try_into().unwrap()) + 0.103).abs() < 1e-9);
+    }
+
+    #[test]
+    fn fm350_lte_apn_ignores_ims_and_strips_3gpp_suffix() {
+        assert_eq!(strip_3gpp_apn_suffix("3gnet.MNC001.MCC460.GPRS"), "3gnet");
+        assert_eq!(strip_3gpp_apn_suffix("ims.MNC001.MCC460.GPRS"), "ims");
+        assert_eq!(strip_3gpp_apn_suffix("cmnet.sh.mnc000.mcc460.gprs"), "cmnet.sh");
+        assert_eq!(strip_3gpp_apn_suffix("custom.corp.apn"), "custom.corp.apn");
+        assert!(is_ims_apn("ims.MNC001.MCC460.GPRS"));
+        assert!(is_ims_apn("IMS"));
+        assert!(!is_ims_apn("3gnet.MNC001.MCC460.GPRS"));
+
+        let raw = "\
++CPIN: READY\r\n\
++CESQ: 17,99,255,255,20,37,255,255,255\r\n\
++GTSENRDTEMP: 1,39431\r\n\
++GTDUALSIM : 0, \"SUB1\", \"NR\"\r\n\
++COPS:0,2,\"46001\",13\r\n\
++CEREG: 0,1\r\n\
++C5GREG: 0\r\n\
++GTCCINFO: \r\n\
+1,4,460,1,E888,00E8CD63D,1750,433,,,5,36,36,18\r\n\
++CGCONTRDP: 0,5,\"3gnet.MNC001.MCC460.GPRS\",\"\",\"\",\"112.65.184.255\"\r\n\
++CGCONTRDP: 1,6,\"ims.MNC001.MCC460.GPRS\",\"\",\"\",\"36.8.136.136.0.0.136.136.0.0.0.0.0.0.0.8\"\r\n\
++EMBIND: 0\r\n\
++CGPADDR: 0,\"10.106.143.127\",\"0.0.0.0.0.0.0.0.24.232.131.10.126.65.142.171\"\r\n\
++CGPADDR: 1,\"0.0.0.0.0.0.0.0.24.232.131.10.146.104.4.243\",\"\"\r\n\
+OK\r\n";
+        let d = parser::dashboard(raw);
+        assert_eq!(d["apn"], "3gnet");
+        assert_eq!(d["ipv4"], "10.106.143.127");
+        assert_eq!(d["ipv6"], "::18e8:830a:7e41:8eab");
+        assert_eq!(d["network_mode"], "LTE");
+
+        let pdp_raw = "\
++CGDCONT: 0,\"IPV4V6\",\"3gnet\",\"\",0,0,0,2,0,0,,0,1,0\r\n\
++CGDCONT: 1,\"IPV4V6\",\"ims\",\"\",0,0,0,2,1,1,,0,1,0\r\n\
++CGCONTRDP: 0,5,\"3gnet.MNC001.MCC460.GPRS\",\"\",\"\",\"112.65.184.255\"\r\n\
++CGCONTRDP: 1,6,\"ims.MNC001.MCC460.GPRS\",\"\",\"\",\"36.8.136.136.0.0.136.136.0.0.0.0.0.0.0.8\"\r\n\
++CGPADDR: 0,\"10.106.143.127\",\"0.0.0.0.0.0.0.0.24.232.131.10.126.65.142.171\"\r\n\
++CGPADDR: 1,\"0.0.0.0.0.0.0.0.24.232.131.10.146.104.4.243\",\"\"\r\n\
+OK\r\n";
+        let pdp = parser::pdp(pdp_raw);
+        let ctxs = pdp["contexts"].as_array().unwrap();
+        assert_eq!(ctxs[0]["cid"], 0);
+        assert_eq!(ctxs[0]["apn"], "3gnet");
+        assert_eq!(ctxs[1]["cid"], 1);
+        assert_eq!(ctxs[1]["apn"], "ims");
+
+        let net_raw = "\
++GTDUALSIM : 0, \"SUB1\", \"NR\"\r\n\
++GTACT: 2,3,3,101,103\r\n\
++E5GOPT: 7\r\n\
++CGDCONT: 2,\"IPV4V6\",\"\",\"\",,,,,,,,,,\r\n\
++CGDCONT: 1,\"IPV4V6\",\"ims\",\"\",0,0,0,2,1,1,,0,1,0\r\n\
++CGCONTRDP: 2,5,\"3gnet.MNC001.MCC460.GPRS\",\"\",\"\",\"112.65.184.255\"\r\n\
++CGCONTRDP: 1,6,\"ims.MNC001.MCC460.GPRS\",\"\",\"\",\"36.8.136.136.0.0.136.136.0.0.0.0.0.0.0.8\"\r\n\
++EMMCHLCK: 0\r\nOK\r\n";
+        let net = parser::network(net_raw);
+        assert_eq!(net["prefNetwork"], "LTE");
+        assert_eq!(net["pdpType"], "IPV4V6");
+        assert_eq!(net["apn"], "3gnet");
+    }
+
+    #[test]
+    fn fm350_ensure_data_session_ignores_cid0_and_activates_cid2_on_lte() {
+        let mut raw = "\
++CPIN: READY\r\n\
++COPS:0,2,\"46001\",13\r\n\
++CEREG: 0,1\r\n\
++CGCONTRDP: 0,5,\"3gnet.MNC001.MCC460.GPRS\",\"\",\"\",\"112.65.184.255\"\r\n\
++CGCONTRDP: 1,6,\"ims.MNC001.MCC460.GPRS\",\"\",\"\",\"36.8.136.136.0.0.136.136.0.0.0.0.0.0.0.8\"\r\n\
++EMBIND: 1,\"M-RNDIS\",2\r\n\
++CGPADDR: 0,\"10.46.68.24\",\"0.0.0.0.0.0.0.0.24.232.131.10.126.65.142.171\"\r\n\
+OK\r\n"
+            .to_string();
+        let throttle = Mutex::new(None);
+        let mut ran = Vec::new();
+        ensure_data_session_with_throttle(&mut raw, &throttle, |cmd| {
+            ran.push(cmd.to_string());
+            match cmd {
+                "AT+CGDCONT?" => Ok("+CGDCONT: 0,\"IPV4V6\",\"3gnet\"\r\n+CGDCONT: 1,\"IPV4V6\",\"ims\"\r\nOK\r\n".into()),
+                "AT+CGDCONT=2,\"IPV4V6\",\"3gnet\"" | "AT+CGACT=1,2" => Ok("\r\nOK\r\n".into()),
+                "AT+CGCONTRDP=2;+CGPADDR=2" => Ok("+CGCONTRDP: 2,5,\"3gnet.MNC001.MCC460.GPRS\",\"\",\"\",\"112.65.184.255\"\r\n+CGPADDR: 2,\"10.46.68.24\",\"\"\r\nOK\r\n".into()),
+                _ => Ok("OK\r\n".into()),
+            }
+        });
+        assert_eq!(
+            ran,
+            vec![
+                "AT+CGDCONT?",
+                "AT+CGDCONT=2,\"IPV4V6\",\"3gnet\"",
+                "AT+CGACT=1,2",
+                "AT+CGCONTRDP=2;+CGPADDR=2",
+            ]
+        );
+        assert!(raw.contains("+CGPADDR: 2,\"10.46.68.24\""));
+
+        // Also verify missing EMBIND triggers bind even if CID 2 is already active.
+        let mut raw_unbound = "\
++CPIN: READY\r\n\
++CEREG: 0,1\r\n\
++CGCONTRDP: 2,5,\"3gnet.MNC001.MCC460.GPRS\",\"\",\"\",\"112.65.184.255\"\r\n\
++EMBIND: 0\r\n\
++CGPADDR: 2,\"10.46.68.24\",\"\"\r\nOK\r\n"
+            .to_string();
+        let throttle2 = Mutex::new(None);
+        let mut ran2 = Vec::new();
+        ensure_data_session_with_throttle(&mut raw_unbound, &throttle2, |cmd| {
+            ran2.push(cmd.to_string());
+            Ok("\r\nOK\r\n".into())
+        });
+        assert_eq!(ran2, vec!["AT+EMBIND=1,\"M-RNDIS\",2"]);
+    }
+
+    #[test]
+    fn fm350_save_settings_targets_cid2_and_gtact_switches_out_of_lte_only() {
+        let mut seen = Vec::new();
+        let res = execute_action(
+            "AT+CGDCONT=1,\"IPV4V6\",\"cmnet\";+QNWPREFCFG=\"mode_pref\",AUTO",
+            |cmd| {
+                seen.push(cmd.to_string());
+                match cmd {
+                    "AT+GTACT?" => Ok("+GTACT: 2,3,3,101,103\r\nOK\r\n".into()),
+                    "AT+GTACT=?" => Ok("+GTACT: (1,2,4,10,14,16,17,20),(2,3,6),(2,3,6),(),(1,8),(101,103),(),(),(501,5078)\r\nOK\r\n".into()),
+                    _ => Ok("\r\nOK\r\n".into()),
+                }
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert!(parser::ok(&res));
+        assert_eq!(
+            seen,
+            vec![
+                "AT+CGDCONT=2,\"IPV4V6\",\"cmnet\"",
+                "AT+GTACT?",
+                "AT+GTACT=?",
+                "AT+GTACT=20,6,3,1,8,101,103,501,5078",
+            ]
+        );
     }
 }
